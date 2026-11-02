@@ -35,7 +35,7 @@ import reward_screen  # noqa: E402
 from sprite_harvest import SpriteHarvester  # noqa: E402
 import connection_lost  # noqa: E402
 import tower_hp  # noqa: E402
-from emulator import verify as verify_emulator  # noqa: E402
+from emulator import DEFAULT_SERIAL, verify as verify_emulator  # noqa: E402
 from brain import arena  # noqa: E402
 from brain.knowledge import BOOK  # noqa: E402
 from brain.policy import Brain  # noqa: E402
@@ -110,7 +110,8 @@ def patch_tower_numbers(state, full, hp_filter=None, now=0.0):
 def main() -> int:
     parser = argparse.ArgumentParser(description="HastyCR live runner")
     parser.add_argument("--adb", required=True, type=Path)
-    parser.add_argument("--serial", default="127.0.0.1:16480")
+    # HASTYCR_SERIAL, via emulator.py, so one env var retargets every entry point.
+    parser.add_argument("--serial", default=DEFAULT_SERIAL)
     parser.add_argument("--hours", type=float, default=8.0)
     parser.add_argument("--max-matches", type=int)
     parser.add_argument("--dry-run", action="store_true")
@@ -287,9 +288,9 @@ def main() -> int:
                         log(f"STOP max_matches={finished}")
                         return 0
                 if not args.no_queue and not args.dry_run and now - last_nav > 4:
-                    xy = state.screen.click_xy
-                    guarded.tap(args.adb, args.serial,
-                                (round(xy[0] * 1.5), round(xy[1] * 1.5)))
+                    # OK, not BuildABot's click point ("Rejouer"): the lobby
+                    # queues the next match, after a stop had its chance.
+                    guarded.tap(args.adb, args.serial, guarded.ok_button(state.screen))
                     last_nav = now
                 unknown_since = now
                 time.sleep(0.7)

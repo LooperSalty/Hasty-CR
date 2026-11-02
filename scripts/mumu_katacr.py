@@ -143,8 +143,7 @@ def main() -> int:
                 if args.auto_queue and not args.dry_run and now - last_nav > 5:
                     _, check = guarded.detect(detector, args.adb, args.serial)
                     if check is not None and check.screen.name == screen:
-                        xy = state.screen.click_xy
-                        guarded.tap(args.adb, args.serial, (round(xy[0] * 1.5), round(xy[1] * 1.5)))
+                        guarded.tap(args.adb, args.serial, guarded.ok_button(state.screen))
                         last_nav = now
                         log("RESULT_EXIT")
                 time.sleep(0.7)

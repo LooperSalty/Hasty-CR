@@ -137,7 +137,70 @@ def _stream_frame(path: Path, serial: str):
     return frame
 
 
+# Frames grabbed from MuMu's render window on the PC instead of over adb.
+#
+# Measured on this machine: PrintWindow on MuMu's `nemuwin` surface returns
+# real pixels in ~9 ms (760x1352), where a screencap costs ~120 ms at 540x960
+# and loads the emulator while it plays. It is also *current*: no device-side
+# buffering, so the bot reads the frame the player is looking at. The one
+# trap is a fully hidden window, for which DWM keeps handing back the last
+# frame - so a frame unchanged for WINDOW_STALE_SECONDS falls back to adb.
+WINDOW_STALE_SECONDS = 3.0
+_window = None
+
+
+def ok_button(screen) -> tuple[int, int]:
+    """The OK button of an end-of-game screen, in 1080x1920 taps.
+
+    BuildABot recognises the screen by the OK button itself (`ltrb`, 720p);
+    its `click_xy` there is "Rejouer", which queues the next match at once -
+    so a bot told to stop after this match played (and lost) one more.
+    """
+    box = getattr(screen, "ltrb", None)
+    if box:
+        x, y = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+    else:
+        x, y = screen.click_xy
+    return round(x * 1.5), round(y * 1.5)
+
+
+def use_window_capture(instance: str) -> str:
+    """Capture from MuMu's window from now on. Returns '' or why it cannot."""
+    global _window
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from studio.capture import SurfaceGrabber, find_surface
+        _window = SurfaceGrabber(find_surface(instance=instance))
+        if _window.grab() is None:
+            raise RuntimeError("the window would not render a frame")
+        return ""
+    except Exception as exc:
+        _window = None
+        return f"{type(exc).__name__}: {exc}"
+
+
+def _window_frame(path: Path, serial: str):
+    """(full, small) from the window, or None to fall back to adb for this one."""
+    if _window is None:
+        return None
+    array = _window.grab()
+    if array is None or (_window.frames > 1 and _window.stale_seconds > WINDOW_STALE_SECONDS):
+        return None
+    # The window's size is the PC's, not the device's: taps must still be
+    # scaled to the device's real resolution, asked once and remembered.
+    global _device_size
+    _device_size = _device_resolution(path, serial)
+    native = Image.fromarray(array[:, :, 2::-1])
+    # Both sizes straight from the native grab: shrinking the upscaled
+    # 1080x1920 copy instead cost ~10 ms a frame for nothing.
+    return (native.resize((NATIVE_W, NATIVE_H), Image.Resampling.BILINEAR),
+            native.resize((368, 652), Image.Resampling.BILINEAR))
+
+
 def capture(path: Path, serial: str):
+    frames = _window_frame(path, serial)
+    if frames is not None:
+        return frames
     frame = _stream_frame(path, serial)
     if frame is not None:
         full = _normalise(frame, record_size=False)
@@ -319,8 +382,7 @@ def main() -> int:
             if screen in {"end_of_game", "bypass_end_of_game"} and now - last_nav > 5:
                 _, state2 = detect(detector, args.adb, args.serial)
                 if state2 is not None and state2.screen.name == screen:
-                    xy720 = state.screen.click_xy
-                    tap(args.adb, args.serial, (round(xy720[0] * 1.5), round(xy720[1] * 1.5)))
+                    tap(args.adb, args.serial, ok_button(state.screen))
                     last_nav = now
                     log(f"RESULT exit screen={screen}")
                 time.sleep(1)

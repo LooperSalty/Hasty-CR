@@ -43,7 +43,7 @@ from sim.env import (ACTIONS, CARD_ACTIONS, DECK_26, GRID_H, GRID_W,
                      NUM_PLANES, NUM_SCALARS, NUM_SLOTS, SPELLS, TILES,
                      _placeable)
 
-_CARDS = None
+_CARDS: dict = {}
 # Detected unit names are not always the card key. A Skeletons card puts three
 # entities called `skeleton` on the board, Archers puts two `archer`, and the
 # card table is keyed by the card. Looking a unit up by its own name silently
@@ -58,7 +58,7 @@ _UNIT_TO_CARD = {
 }
 
 
-def _cards():
+def _cards(deck=None):
     """The card table, resolved exactly the way `ClashEnv` resolves it.
 
     Not `load_gamedata` directly: the loader does not key everything under the
@@ -66,33 +66,40 @@ def _cards():
     `resolve_deck` is what maps our names onto the client's. Using the raw
     table here meant Ice Golem had no cost, fell back to a default of four
     elixir, and was masked out as unaffordable at two.
+
+    `deck` is the checkpoint's own deck when it is not Hog 2.6: its cards
+    must be priced and resolved too (the starter deck's `archer` is in no
+    meta deck). One table per deck, built once.
     """
-    global _CARDS
-    if _CARDS is None:
+    key = tuple(deck or DECK_26)
+    if key not in _CARDS:
         from sim.gamedata import load_gamedata
         from sim.meta_decks import deck_pool
         from sim.runner import resolve_deck
         all_cards = load_gamedata(11)
-        wanted = set(DECK_26)
+        wanted = set(DECK_26) | set(key)
         try:
-            for _name, _style, deck in deck_pool(all_cards):
-                wanted |= set(deck)
+            for _name, _style, pool_deck in deck_pool(all_cards):
+                wanted |= set(pool_deck)
         except (RuntimeError, OSError):
             pass                      # no pool synced; our own deck is enough
-        _CARDS = resolve_deck(all_cards, sorted(wanted))
-    return _CARDS
+        _CARDS[key] = resolve_deck(all_cards, sorted(wanted))
+    return _CARDS[key]
 
 
-def card_cost(card: str) -> float:
+def card_cost(card: str, deck=None) -> float:
     """Elixir cost, or 99 for something we cannot price and must not play."""
-    spec = _cards().get(card)
+    spec = _cards(deck).get(card)
     cost = getattr(spec, "cost", None) if spec else None
     return float(cost) if cost else 99.0
 
 
-def _unit_traits(name: str):
+def _unit_traits(name: str, deck=None):
     """(max_hp, flying, is_building) for a detected unit name."""
-    spec = _cards().get(_UNIT_TO_CARD.get(name, name))
+    table = _cards(deck)
+    # The card a unit belongs to first, then the unit's own name: the
+    # simulator calls the Archers card `archer`, which the map sends nowhere.
+    spec = table.get(_UNIT_TO_CARD.get(name, name)) or table.get(name)
     unit = getattr(spec, "unit", None) if spec else None
     if unit is None:
         return 0.0, False, False
@@ -123,13 +130,15 @@ def ally_cells_with_names(state):
     return out
 
 
-def observation_from_live(obs, allies=None) -> dict:
+def observation_from_live(obs, allies=None, deck=None) -> dict:
     """A live `brain.policy.Observation` in the simulator's own frame.
 
     `obs.tracks` are the enemies. `allies` is an optional list of
     `(cell, name)` from `ally_cells_with_names`; without it our own units fall
-    back to `obs.allies`, which carries positions but no identity.
+    back to `obs.allies`, which carries positions but no identity. `deck` is
+    the checkpoint's deck order (simulator names); Hog 2.6 when omitted.
     """
+    vocab = list(deck or DECK_26)
     planes = np.zeros((NUM_PLANES, GRID_H, GRID_W), dtype=np.float32)
 
     def place(cell_x: float, cell_y: float, base: int, name: Optional[str]):
@@ -137,7 +146,7 @@ def observation_from_live(obs, allies=None) -> dict:
         col = int(np.clip(round(cell_x), 0, GRID_W - 1))
         row = int(np.clip(round(31 - cell_y), 0, GRID_H - 1))
         planes[base, row, col] += 1.0
-        hp, flying, building = _unit_traits(name) if name else (0.0, False, False)
+        hp, flying, building = _unit_traits(name, deck) if name else (0.0, False, False)
         planes[2 + base, row, col] += hp / 1000.0
         if flying:
             planes[4 + base, row, col] += 1.0
@@ -165,8 +174,8 @@ def observation_from_live(obs, allies=None) -> dict:
         scalars[base + 2 + index] = float(obs.enemy_hp.get(lane, 1.0))
     base += 4
     for card, slot in obs.hand.items():
-        if card in DECK_26 and 0 <= slot < NUM_SLOTS:
-            scalars[base + slot * len(DECK_26) + DECK_26.index(card)] = 1.0
+        if card in vocab and 0 <= slot < NUM_SLOTS:
+            scalars[base + slot * len(vocab) + vocab.index(card)] = 1.0
     # The next card. These eight scalars were left at zero for the whole of
     # every live match while the simulator always set one of them, so the
     # policy was reading a state that never occurred once in training.
@@ -177,12 +186,26 @@ def observation_from_live(obs, allies=None) -> dict:
     # matches against a person, hog share was 3-5% against 11-13% for the
     # same checkpoint in the simulator, with 266-360 holds a match.
     nxt = getattr(obs, "next_card", "")
-    if nxt in DECK_26:
-        scalars[base + NUM_SLOTS * len(DECK_26) + DECK_26.index(nxt)] = 1.0
+    if nxt in vocab:
+        scalars[base + NUM_SLOTS * len(vocab) + vocab.index(nxt)] = 1.0
     return {"planes": planes, "scalars": scalars}
 
 
-def mask_from_live(obs) -> np.ndarray:
+def _lands_anywhere(card: str, deck=None) -> bool:
+    """`sim.env.is_spell` without a match: a named spell, or a card with no unit.
+
+    `SPELLS` only names the 2.6 spells, so Arrows were masked to our own half
+    like a troop - which no other deck survives, and which the simulator
+    never did.
+    """
+    if card in SPELLS:
+        return True
+    spec = _cards(deck).get(card)
+    return bool(spec is not None and spec.unit is None
+                and not getattr(spec, "additional_summons", ()))
+
+
+def mask_from_live(obs, deck=None) -> np.ndarray:
     """Legal actions live: what is in hand, affordable, and placeable."""
     mask = np.zeros(ACTIONS, dtype=bool)
     mask[0] = True
@@ -193,9 +216,9 @@ def mask_from_live(obs) -> np.ndarray:
             continue
         # Millielixir, matching the simulator: comparing 3.999 against 4.0 in
         # floats and 3999 against 4000 in integers must give the same answer.
-        if round(float(obs.elixir) * 1000) < round(card_cost(card) * 1000):
+        if round(float(obs.elixir) * 1000) < round(card_cost(card, deck) * 1000):
             continue
-        grid = _placeable(1, enemy_down, card in SPELLS)
+        grid = _placeable(1, enemy_down, _lands_anywhere(card, deck))
         start = 1 + slot * TILES
         mask[start:start + TILES] = grid.reshape(-1)
     return mask
@@ -216,6 +239,13 @@ class RLBrain:
         self.device = torch.device(device)
         blob = torch.load(Path(checkpoint), map_location=self.device,
                           weights_only=False)
+        # The live bridge encodes a Hog 2.6 hand. A checkpoint trained on another
+        # deck (sim.train_ppo --deck) has the same shapes and would load and play
+        # with every hand slot meaning a different card. Older ones carry no deck.
+        trained_on = list(blob.get("deck") or DECK_26)
+        if trained_on != list(DECK_26):
+            raise ValueError(f"{Path(checkpoint).name} was trained on {trained_on}; "
+                             f"the live bridge only plays Hog 2.6")
         self.network = build_network(NUM_PLANES, NUM_SCALARS, ACTIONS)
         self.network.load_state_dict(blob["state_dict"])
         self.network.to(self.device).eval()

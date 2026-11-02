@@ -38,17 +38,21 @@ def main() -> int:
     parser.add_argument("--patience", type=int, default=30)
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--data", type=Path, default=DATA,
+                        help="dataset yaml; tmp/yolo_synth/data.yaml from "
+                             "scripts/synth_dataset.py adds the synthetic images")
     args = parser.parse_args()
 
     from ultralytics import YOLO
 
-    if not DATA.exists():
-        print(f"missing {DATA}; run scripts/prepare_yolo_dataset.py first")
+    if not args.data.exists():
+        print(f"missing {args.data}; run scripts/prepare_yolo_dataset.py "
+              f"(or scripts/synth_dataset.py) first")
         return 1
 
     model = YOLO(args.model)
     model.train(
-        data=str(DATA),
+        data=str(args.data),
         epochs=args.epochs,
         imgsz=args.imgsz,
         batch=args.batch,

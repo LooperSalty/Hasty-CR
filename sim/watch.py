@@ -231,6 +231,12 @@ class Watcher(QWidget):
         self.spells = load_spells(level=args.level)
         self.deck = DECK_26
         self._brain, self._simple = BrainPolicy, SimpleOpponent
+        # --bot pekka: the user's P.E.K.K.A rules (scripts/pekka_strategy.py),
+        # the same that play on MuMu, on the bottom seat with that deck.
+        if getattr(args, "bot", "brain") == "pekka":
+            from sim_rules_seat import PEKKA_DECK
+            self.deck = list(PEKKA_DECK)
+            self.cards = resolve_deck(self._full, self.deck)
         self._deck_rng = random.Random(args.seed)
 
         # Opponent decks. Watching a mirror is watching the same deck twice and
@@ -325,7 +331,12 @@ class Watcher(QWidget):
 
         self.match = Match(cards=cards, decks=(list(self.deck), list(top_deck)),
                            seed=self.args.seed + self.played, spells=self.spells)
-        self.bottom = self._brain(cards, side=1)
+        if getattr(self.args, "bot", "brain") == "pekka":
+            from pekka_strategy import PekkaStrategy
+            from sim_rules_seat import RulesSeat
+            self.bottom = RulesSeat(PekkaStrategy())
+        else:
+            self.bottom = self._brain(cards, side=1)
         if self.args.opponent == "random" or self._pool:
             from sim.opponents import ScriptedOpponent
             self.top = ScriptedOpponent(cards, side=-1, deck=top_deck,
@@ -1117,6 +1128,9 @@ def main() -> int:
     parser.add_argument("--random-decks", action="store_true",
                         help="sample two 8-card decks from all resolvable public cards")
     parser.add_argument("--record", type=Path)
+    parser.add_argument("--bot", choices=("brain", "pekka"), default="brain",
+                        help="bottom seat: the 2.6 rule brain, or the user's P.E.K.K.A "
+                             "rules with the P.E.K.K.A deck")
     parser.add_argument("--probe", type=int, help="render N frames, save a still, exit")
     parser.add_argument("--rings", action="store_true",
                         help="draw each ranged unit's attack range and hitbox")

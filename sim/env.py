@@ -93,6 +93,15 @@ NUM_SCALARS = 3 + 2 * len(LANES) + NUM_SLOTS * len(DECK_26) + len(DECK_26)
 # in self-play without learning each orientation separately.
 
 
+def parse_opponent(spec: str) -> Tuple[str, Tuple[float, float]]:
+    """'live@1.33' -> ('live', (1.33, 1.33)); 'live@1.0-1.4' -> a range; 'meta' -> x1."""
+    kind, _, boost = spec.partition("@")
+    if not boost:
+        return kind, (1.0, 1.0)
+    low, _, high = boost.partition("-")
+    return kind, (float(low), float(high or low))
+
+
 def ability_entities(match, side: int):
     """Living friendly units with an ability, in stable UID order."""
     if match is None:
@@ -146,13 +155,32 @@ def observe(match, side: int = 1) -> dict:
         scalars[base + index] = ours.get(key, 0.0)
         scalars[base + len(LANES) + index] = theirs.get(key, 0.0)
     base += 2 * len(LANES)
+    # The one-hot follows the seat's own deck order, so any eight-card deck fits
+    # the same width. For the default seat that order *is* DECK_26, so Hog 2.6
+    # observations are bit-for-bit what they were.
+    vocab = list(player.deck) if len(player.deck) == len(DECK_26) else DECK_26
+    width = len(vocab)
     for slot, card in enumerate(player.hand[:NUM_SLOTS]):
-        if card in DECK_26:
-            scalars[base + slot * len(DECK_26) + DECK_26.index(card)] = 1.0
+        if card in vocab:
+            scalars[base + slot * width + vocab.index(card)] = 1.0
     nxt = player.next_card
-    if nxt in DECK_26:
-        scalars[base + NUM_SLOTS * len(DECK_26) + DECK_26.index(nxt)] = 1.0
+    if nxt in vocab:
+        scalars[base + NUM_SLOTS * width + vocab.index(nxt)] = 1.0
     return {"planes": planes, "scalars": scalars}
+
+
+def is_spell(match, card: str, spec) -> bool:
+    """The engine's own rule (Match.play_card) for what lands anywhere.
+
+    `SPELLS` only names the 2.6 spells; Arrows, Zap and the rest were masked
+    to our own half like troops, which no other deck would survive.
+    """
+    if card in SPELLS:
+        return True
+    if spec is not None and spec.unit is None and not getattr(spec, "additional_summons", ()):
+        return True
+    spell = getattr(match, "spells", {}).get(card)
+    return bool(spell is not None and spell.resolves_card_as_spell)
 
 
 # Which cells a card may go in, by (side, which enemy towers are down, spell).
@@ -200,7 +228,7 @@ def legal_mask(match, cards, side: int = 1) -> np.ndarray:
         cost = getattr(spec, "cost", 0) * 1000 if spec else 0
         if player.elixir < cost:
             continue
-        grid = _placeable(side, tuple(enemy_down), card in SPELLS)
+        grid = _placeable(side, tuple(enemy_down), is_spell(match, card, spec))
         base = 1 + slot * TILES
         mask[base:base + TILES] = grid.reshape(-1)
     for rank, entity in enumerate(ability_entities(match, side)[:ABILITY_SLOTS]):
@@ -263,10 +291,25 @@ class ClashEnv:
     def __init__(self, seed: int = 0, level: int = 11, opponent: str = "brain",
                  decide_every_ms: int = DECIDE_EVERY_MS, max_ms: int = MAX_MS,
                  rewards: Optional[RewardWeights] = None,
-                 opponent_config: Optional[Path] = None):
+                 opponent_config: Optional[Path] = None,
+                 deck: Optional[List[str]] = None,
+                 opponent_boost: Optional[Tuple[float, float]] = None):
         from sim.gamedata import load_gamedata
+
+        # "live@1.33" or "live@1.0-1.4": a scripted opponent whose units are
+        # that much stronger (drawn per episode for a range), as higher card
+        # levels make them. `opponent_boost` overrides the spec's range.
+        opponent, spec_boost = parse_opponent(opponent)
+        self._opponent_boost = tuple(opponent_boost) if opponent_boost else spec_boost
         from sim.runner import BrainPolicy, SimpleOpponent, resolve_deck
         from sim.spells import load_spells
+
+        # The learning seat's deck. Any eight distinct cards fit the same
+        # observation and action shapes; the default is the 2.6 the live
+        # bridge and the rule engine were built around.
+        self.deck = list(deck) if deck else list(DECK_26)
+        if len(self.deck) != len(DECK_26) or len(set(self.deck)) != len(self.deck):
+            raise ValueError(f"a deck is {len(DECK_26)} distinct cards, got {self.deck}")
 
         self._spells = load_spells(level=level)
         self._brain_policy = BrainPolicy
@@ -286,10 +329,24 @@ class ClashEnv:
                 raise RuntimeError(
                     "opponent='meta' needs a deck pool; run "
                     "scripts/sync_meta_decks.py")
-        wanted = set(DECK_26)
-        for _name, _style, deck in self._deck_pool:
-            wanted |= set(deck)
+        elif opponent == "live":
+            # The decks the live bot actually meets, rebuilt from its log; the
+            # same scripted pilot as `meta` plays them.
+            from sim.meta_decks import live_deck_pool
+            self._deck_pool = live_deck_pool(all_cards)
+            if not self._deck_pool:
+                raise RuntimeError(
+                    "opponent='live' needs data/live_decks.json; run "
+                    "scripts/build_live_decks.py")
+        wanted = set(DECK_26) | set(self.deck)
+        for _name, _style, pool_deck in self._deck_pool:
+            wanted |= set(pool_deck)
         self._cards = resolve_deck(all_cards, sorted(wanted))
+        # resolve_deck drops unknown names silently; a deck missing a card
+        # would train on seven and look fine.
+        unresolved = [card for card in self.deck if card not in self._cards]
+        if unresolved:
+            raise ValueError(f"cards not in the game data: {unresolved}")
 
         self.seed = seed
         self.decide_every_ms = decide_every_ms
@@ -339,9 +396,9 @@ class ClashEnv:
         silent no-op rather than an error, because a worker that raises
         mid-run takes the whole rollout down.
         """
-        if kind == "meta" and not self._deck_pool:
+        if kind in ("meta", "live") and not self._deck_pool:
             return
-        if kind in ("brain", "meta", "simple", "mirror"):
+        if kind in ("brain", "meta", "live", "simple", "mirror"):
             self._opponent_kind = kind
 
     @property
@@ -385,29 +442,37 @@ class ClashEnv:
         self._episodes += 1
 
         opponent_deck = DECK_26
-        if self._opponent_kind == "meta" and self._policy_opponent is None:
+        if self._opponent_kind in ("meta", "live") and self._policy_opponent is None:
             # Seeded by the episode seed, so a run is reproducible and two
             # workers on different seeds see different decks.
             picker = random.Random(self.seed)
             name, style, opponent_deck = picker.choice(self._deck_pool)
             self.opponent_deck_name = name
             self.opponent_deck_style = style
-        self.match = Match(cards=self._cards, decks=(DECK_26, opponent_deck),
+        if self._policy_opponent is not None or self._opponent_kind == "mirror":
+            # A learned opponent is a past version of this policy and reads its
+            # hand against our deck order; a mirror is our deck by definition.
+            # `brain` and `simple` keep 2.6: the rule engine only knows 2.6.
+            opponent_deck = self.deck
+        self.match = Match(cards=self._cards, decks=(self.deck, opponent_deck),
                            seed=self.seed, spells=self._spells)
         if self._policy_opponent is not None:
             # A learned opponent keeps its own deck fixed to ours: it is a past
-            # version of this policy, and it reads a 2.6 hand one-hot.
+            # version of this policy, and it reads the same hand one-hot.
             self.opponent = self._policy_opponent
             self.opponent_deck_name = getattr(self.opponent, "name", "self")
             self.opponent_deck_style = "self"
         elif self._opponent_kind == "brain":
             self.opponent = self._brain_policy(self._cards, side=-1,
                                                config_path=self._opponent_config)
-        elif self._opponent_kind == "meta":
+        elif self._opponent_kind in ("meta", "live"):
             from sim.opponents import ScriptedOpponent
+            low, high = self._opponent_boost
+            boost = low if high <= low else round(random.Random(self.seed + 2).uniform(low, high), 3)
             self.opponent = ScriptedOpponent(
                 self._cards, side=-1, deck=list(opponent_deck),
-                style=self.opponent_deck_style, seed=self.seed + 1)
+                style=self.opponent_deck_style, seed=self.seed + 1,
+                stat_boost=boost)
         elif self._opponent_kind == "mirror":
             # Our own deck, piloted by the deck-agnostic heuristics rather than
             # by the rule engine or a past self. It exists so a mirror-trained
@@ -423,7 +488,7 @@ class ClashEnv:
             self.opponent_deck_name = f"mirror_{style}"
             self.opponent_deck_style = style
             self.opponent = ScriptedOpponent(
-                self._cards, side=-1, deck=list(DECK_26),
+                self._cards, side=-1, deck=list(self.deck),
                 style=style, seed=self.seed + 1)
         else:
             self.opponent = self._simple_opponent(self._cards, side=-1,

@@ -31,15 +31,35 @@ COMMIT_ELIXIR = {"cycle": 5, "control": 7, "beatdown": 9}
 REACTION_SECONDS = {"cycle": 0.6, "control": 0.9, "beatdown": 1.1}
 
 
+def boost_new_units(match, side: int, before, factor: float) -> None:
+    """Scale hit points and damage of `side`'s units that are not in `before`.
+
+    A card level is about x1.1 on both. Both seats play level 11 in the
+    simulator, while live the account's cards sit levels below its
+    opponents': measured 2026-10-27, the policy winning 96% against the decks
+    it meets live won 52% once their units were x1.33 - its live record.
+    """
+    for uid, entity in match.battle.entities.items():
+        if uid in before or entity.side != side:
+            continue
+        entity.hitpoints = int(entity.hitpoints * factor)
+        entity.max_hitpoints = int(entity.max_hitpoints * factor)
+        entity.damage = int(entity.damage * factor)
+
+
 class ScriptedOpponent:
-    """Pilots one deck with deck-agnostic heuristics set by its style."""
+    """Pilots one deck with deck-agnostic heuristics set by its style.
+
+    `stat_boost` makes the units it deploys stronger, as higher card levels do.
+    """
 
     def __init__(self, cards: Dict[str, object], side: int, deck: List[str],
-                 style: str = "cycle", seed: int = 0):
+                 style: str = "cycle", seed: int = 0, stat_boost: float = 1.0):
         self.cards = cards
         self.side = side
         self.deck = deck
         self.style = style
+        self.stat_boost = stat_boost
         self.rng = random.Random(seed)
         self.plays: Dict[str, int] = {}
         self.threat_since: Optional[int] = None
@@ -104,8 +124,11 @@ class ScriptedOpponent:
         return min(high, max(low, value + self.rng.randint(-spread, spread)))
 
     def _play(self, match, card: str, x: int, y: int, tag: str):
+        before = set(match.battle.entities) if self.stat_boost != 1.0 else ()
         if not match.play_card(self.side, card, grid_to_point(x, y, self.side)):
             return None
+        if self.stat_boost != 1.0:
+            boost_new_units(match, self.side, before, self.stat_boost)
         self.plays[card] = self.plays.get(card, 0) + 1
         self.last_play_ms = match.elapsed_ms
         return card, x, y, tag

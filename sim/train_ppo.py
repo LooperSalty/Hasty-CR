@@ -141,16 +141,17 @@ def masked_distribution(logits, mask):
 
 
 def evaluate(network, device, episodes: int = 12, seed: int = 900_000,
-             opponent: str = "brain", rewards=None) -> dict:
+             opponent: str = "brain", rewards=None, deck=None) -> dict:
     """Greedy rollouts against whatever the run is training on.
 
     Evaluating on a different opponent than training would report a number that
-    is not the one being optimised, so this takes the same setting.
+    is not the one being optimised, so this takes the same setting - and the
+    same deck, for a run that is not Hog 2.6.
     """
     import torch
     from sim.env import ClashEnv
 
-    env = ClashEnv(seed=seed, opponent=opponent, rewards=rewards)
+    env = ClashEnv(seed=seed, opponent=opponent, rewards=rewards, deck=deck)
     wins = losses = draws = 0
     crowns_for = crowns_against = 0
     hog = plays = 0
@@ -247,9 +248,11 @@ def main() -> int:
     parser.add_argument("--eval-episodes", type=int, default=12)
     parser.add_argument("--name", default="ppo")
     parser.add_argument("--opponent", default="meta",
-                        choices=("meta", "brain", "simple", "mirror"),
+                        choices=("meta", "live", "brain", "simple", "mirror"),
                         help="meta draws a different real ladder deck each "
-                             "episode; brain is the hand-written policy on our "
+                             "episode; live draws from the decks the live bot "
+                             "met (data/live_decks.json, losses weighted up); "
+                             "brain is the hand-written policy on our "
                              "own deck, which is the mirror this project spent "
                              "a long time answering the wrong question against")
     parser.add_argument("--brain-share", type=float, default=0.0,
@@ -263,13 +266,20 @@ def main() -> int:
                              "all-meta arrangement gave 82.5%% and 16.7%% the "
                              "other way. Both were measured here")
     parser.add_argument("--scripted-alt", default="meta",
-                        choices=("meta", "mirror", "simple"),
+                        choices=("meta", "live", "mirror", "simple"),
                         help="the non-rule-engine half of the "
                              "scripted episodes. `meta` for a "
                              "ladder policy; `mirror` for a 2.6 "
                              "mirror specialist, where variety "
                              "has to come from how the deck is "
                              "played rather than from the deck")
+    parser.add_argument("--opponent-boost", default="",
+                        help="LOW-HIGH: scripted opponents' units this much "
+                             "stronger, drawn per episode (a card level is "
+                             "~x1.1). The policy that won 96%% against the "
+                             "decks it meets live won 52%% at x1.33 - its live "
+                             "record - so its weak point is being outlevelled. "
+                             "Eval names take it too: live@1.33")
     parser.add_argument("--eval-opponent", default="",
                         help="who the periodic eval scores against; defaults "
                              "to --opponent. Worth separating precisely when "
@@ -324,12 +334,26 @@ def main() -> int:
     parser.add_argument("--init", type=Path,
                         help="start from these weights without their optimiser "
                              "state - for beginning PPO from a behaviour clone")
+    parser.add_argument("--deck", default="",
+                        help="comma-separated cards for the learning seat (default "
+                             "Hog 2.6), in the same order as the clone it starts from")
     args = parser.parse_args()
 
     import torch
     import torch.nn as nn
-    from sim.env import ACTIONS, NUM_PLANES, NUM_SCALARS
+    from sim.clone import parse_deck
+    from sim.env import ACTIONS, DECK_26, NUM_PLANES, NUM_SCALARS, parse_opponent
     from sim.vecenv import VecClashEnv
+
+    deck = parse_deck(args.deck) or list(DECK_26)
+
+    def check_deck(blob, source) -> None:
+        # Every 8-card deck has the same tensor shapes, so a checkpoint for
+        # another deck loads silently with every hand slot meaning a
+        # different card. Older checkpoints carry no deck: they are 2.6.
+        trained_on = list(blob.get("deck") or DECK_26)
+        if trained_on != deck:
+            raise SystemExit(f"{source} was trained on {trained_on}, this run is {deck}")
 
     hyper = Hyper(envs=args.envs, rollout=args.rollout, lr=args.lr,
                   entropy_coef=args.entropy)
@@ -345,6 +369,7 @@ def main() -> int:
         # supervised objective at a different learning rate, and carrying that
         # momentum into PPO is not resuming anything - it is noise.
         blob = torch.load(args.init, map_location=device, weights_only=False)
+        check_deck(blob, args.init)
         network.load_state_dict(blob["state_dict"])
         log(f"initialised from {args.init} (weights only, step counter at 0)")
     anchor_net = None
@@ -354,6 +379,7 @@ def main() -> int:
         anchor_net = build_network(NUM_PLANES, NUM_SCALARS, ACTIONS).to(device)
         anchor_blob = torch.load(args.anchor, map_location=device,
                                  weights_only=False)
+        check_deck(anchor_blob, args.anchor)
         anchor_net.load_state_dict(anchor_blob["state_dict"])
         anchor_net.eval()
         for parameter in anchor_net.parameters():
@@ -362,6 +388,7 @@ def main() -> int:
 
     if args.resume and args.resume.exists():
         blob = torch.load(args.resume, map_location=device, weights_only=False)
+        check_deck(blob, args.resume)
         network.load_state_dict(blob["state_dict"])
         optimiser.load_state_dict(blob["optimiser"])
         start_step = int(blob.get("step", 0))
@@ -369,7 +396,7 @@ def main() -> int:
 
     parameters = sum(p.numel() for p in network.parameters())
     log(f"PPO start: {args.envs} envs, {parameters/1e6:.1f}M params, device={device}, "
-        f"target {args.steps:,} steps")
+        f"target {args.steps:,} steps, deck {','.join(deck)}")
 
     from sim.env import RewardWeights
     reward_weights = RewardWeights(
@@ -381,7 +408,10 @@ def main() -> int:
                       opponent=args.opponent, rewards=reward_weights,
                       scripted_share=(args.scripted_share if args.league else 1.0),
                       brain_share=args.brain_share,
-                      alt_kind=args.scripted_alt)
+                      alt_kind=args.scripted_alt,
+                      deck=deck,
+                      opponent_boost=(parse_opponent(f"x@{args.opponent_boost}")[1]
+                                      if args.opponent_boost else None))
     eval_opponent = args.eval_opponent or args.opponent
     # Comma-separated selects on the worst of several; see the score below.
     eval_opponents = [name.strip() for name in eval_opponent.split(",")
@@ -622,7 +652,8 @@ def main() -> int:
                 per = {}
                 for name in eval_opponents:
                     per[name] = evaluate(network, device, args.eval_episodes,
-                                         opponent=name, rewards=reward_weights)
+                                         opponent=name, rewards=reward_weights,
+                                         deck=deck)
                 network.train()
 
                 # The selection score is the WORST opponent, not the mean and
@@ -654,7 +685,8 @@ def main() -> int:
                     f"{extra}")
                 blob = {"state_dict": network.state_dict(),
                         "optimiser": optimiser.state_dict(),
-                        "step": step, "eval": result, "hyper": asdict(hyper)}
+                        "step": step, "eval": result, "hyper": asdict(hyper),
+                        "deck": deck}
                 torch.save(blob, OUT / f"{args.name}_last.pt")
                 if args.league:
                     # Written whole, then moved into place: a worker that
@@ -682,7 +714,7 @@ def main() -> int:
     finally:
         vec.close()
         torch.save({"state_dict": network.state_dict(),
-                    "optimiser": optimiser.state_dict(), "step": step},
+                    "optimiser": optimiser.state_dict(), "step": step, "deck": deck},
                    OUT / f"{args.name}_last.pt")
         log(f"stopped at {step:,} steps")
     return 0

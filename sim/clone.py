@@ -59,6 +59,95 @@ def log(message: str) -> None:
         stream.write(line + "\n")
 
 
+TEACHER_STYLES = ("beatdown", "control", "cycle")
+
+
+def parse_deck(text: Optional[str]) -> Optional[List[str]]:
+    """'a,b,...' -> list, or None for the default Hog 2.6."""
+    if not text:
+        return None
+    return [card.strip() for card in text.split(",") if card.strip()]
+
+
+def make_scripted_teacher(cards, deck: List[str], style: str, seed: int):
+    """The deck-agnostic ScriptedOpponent, proposing instead of playing.
+
+    The rule engine only knows Hog 2.6, so another deck needs another teacher.
+    Its `_play` normally deploys the card itself; here the environment must
+    execute the action, so the recorded state is the one that follows it.
+    """
+    from sim.opponents import ScriptedOpponent
+
+    class ScriptedTeacher(ScriptedOpponent):
+        def _play(self, match, card, x, y, tag):
+            return card, x, y, tag
+
+        def confirm(self, match, card: str) -> None:
+            self.plays[card] = self.plays.get(card, 0) + 1
+            self.last_play_ms = match.elapsed_ms
+
+    return ScriptedTeacher(cards, side=1, deck=list(deck), style=style, seed=seed)
+
+
+def collect_scripted(episodes: int, deck: List[str], style: str,
+                     hold_share: float = 0.25,
+                     seed: int = 500_000) -> Tuple[dict, np.ndarray]:
+    """Like `collect`, with the scripted teacher piloting `deck`."""
+    from sim.env import ClashEnv, is_spell
+
+    env = ClashEnv(seed=seed, deck=deck)
+    planes: List[np.ndarray] = []
+    scalars: List[np.ndarray] = []
+    masks: List[np.ndarray] = []
+    actions: List[int] = []
+    holds = decisions = rejected = wasted = 0
+    rng = random.Random(0)
+
+    for episode in range(episodes):
+        obs, info = env.reset(seed=seed + episode)
+        episode_style = rng.choice(TEACHER_STYLES) if style == "mix" else style
+        teacher = make_scripted_teacher(env._cards, deck, episode_style, seed + episode)
+        teacher.reset()
+        while True:
+            proposal = teacher.act(env.match)
+            action, card = 0, None
+            if proposal is not None:
+                card, x, y, tag = proposal
+                hand = env.match.players[1].hand
+                if tag.startswith("push") and is_spell(env.match, card, env._cards.get(card)):
+                    # A "push" lands at the back of our own half: for a spell
+                    # that is elixir thrown at nothing. Not worth imitating.
+                    wasted += 1
+                elif card in hand:
+                    candidate = ClashEnv.encode(hand.index(card), int(x), int(y))
+                    if 0 <= candidate < len(info["action_mask"]) and info["action_mask"][candidate]:
+                        action = candidate
+                    else:
+                        rejected += 1
+
+            if action != 0 or rng.random() < hold_share:
+                planes.append(obs["planes"])
+                scalars.append(obs["scalars"])
+                masks.append(info["action_mask"])
+                actions.append(action)
+                holds += action == 0
+                decisions += action != 0
+
+            obs, _, terminated, truncated, info = env.step(action)
+            if action != 0 and card is not None:
+                teacher.confirm(env.match, card)
+            if terminated or truncated:
+                break
+        if (episode + 1) % 50 == 0:
+            log(f"collected {episode + 1}/{episodes} episodes, {decisions} plays, "
+                f"{holds} holds, {rejected} illegal wishes, {wasted} wasted spells")
+
+    env.close()
+    data = {"planes": np.stack(planes), "scalars": np.stack(scalars),
+            "masks": np.stack(masks)}
+    return data, np.array(actions, dtype=np.int64)
+
+
 def collect(episodes: int, hold_share: float = 0.25,
             seed: int = 500_000) -> Tuple[dict, np.ndarray]:
     """Play `episodes` matches with the brain in the agent's seat, recording it."""
@@ -133,15 +222,35 @@ def main() -> int:
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--hold-share", type=float, default=0.25)
     parser.add_argument("--name", default="clone")
+    parser.add_argument("--deck", default="",
+                        help="comma-separated cards for the learning seat (default Hog 2.6). "
+                             "The order fixes the hand one-hot: reuse the same string for PPO")
+    parser.add_argument("--teacher", choices=("auto", "brain", "scripted"), default="auto",
+                        help="brain = the Hog 2.6 rule engine; scripted = the deck-agnostic "
+                             "ScriptedOpponent (auto: brain for 2.6, scripted otherwise)")
+    parser.add_argument("--teacher-style", choices=(*TEACHER_STYLES, "mix"), default="beatdown")
     args = parser.parse_args()
 
     import torch
     import torch.nn as nn
-    from sim.env import ACTIONS, NUM_PLANES, NUM_SCALARS
+    from sim.env import ACTIONS, DECK_26, NUM_PLANES, NUM_SCALARS
     from sim.train_ppo import build_network, masked_distribution
 
+    deck = parse_deck(args.deck) or list(DECK_26)
+    teacher = args.teacher
+    if teacher == "auto":
+        teacher = "brain" if deck == list(DECK_26) else "scripted"
+    if teacher == "brain" and deck != list(DECK_26):
+        raise SystemExit("the brain teacher only plays Hog 2.6; use --teacher scripted")
+    log(f"deck={','.join(deck)} teacher={teacher}"
+        + (f" style={args.teacher_style}" if teacher == "scripted" else ""))
+
     started = time.time()
-    data, actions = collect(args.episodes, args.hold_share)
+    if teacher == "brain":
+        data, actions = collect(args.episodes, args.hold_share)
+    else:
+        data, actions = collect_scripted(args.episodes, deck, args.teacher_style,
+                                         args.hold_share)
     played = int((actions != 0).sum())
     log(f"dataset {len(actions)} samples ({played} plays, "
         f"{len(actions) - played} holds) in {time.time() - started:.0f}s")
@@ -196,9 +305,12 @@ def main() -> int:
         if accuracy > best:
             best = accuracy
             OUT.mkdir(parents=True, exist_ok=True)
+            # The deck is saved because every 8-card deck has the same tensor
+            # shapes: a checkpoint would load into a run for another deck
+            # without complaint, with every hand slot meaning a different card.
             torch.save({"state_dict": network.state_dict(),
                         "optimiser": optimiser.state_dict(),
-                        "step": 0, "val_accuracy": accuracy},
+                        "step": 0, "val_accuracy": accuracy, "deck": deck},
                        OUT / f"{args.name}.pt")
 
     log(f"best val accuracy {best:.3f} -> {OUT / (args.name + '.pt')}")
@@ -207,7 +319,7 @@ def main() -> int:
     blob = torch.load(OUT / f"{args.name}.pt", map_location=device, weights_only=False)
     network.load_state_dict(blob["state_dict"])
     network.eval()
-    result = evaluate(network, device, episodes=16)
+    result = evaluate(network, device, episodes=16, deck=deck)
     log(f"EVAL(clone)  W{result['wins']} L{result['losses']} D{result['draws']}  "
         f"crowns {result['crowns_for']}-{result['crowns_against']}  "
         f"hog {result['hog_share']:.0%}  plays/match {result['plays_per_match']:.0f}")

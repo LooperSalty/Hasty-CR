@@ -73,11 +73,15 @@ $ErrorActionPreference = 'Continue'
 $root   = $PSScriptRoot
 $python = Join-Path $root '.venvs\buildabot\Scripts\python.exe'
 $adb    = 'C:\Program Files\Netease\MuMuPlayer\nx_device\15.0\shell\adb.exe'
-$serial = '127.0.0.1:16480'
+# HASTYCR_SERIAL picks the MuMu instance on another machine; scripts/emulator.py
+# reads the same variable, so the safety check and the taps agree.
+$serial = if ($env:HASTYCR_SERIAL) { $env:HASTYCR_SERIAL } else { '127.0.0.1:16480' }
 
 if ($Stop) {
-    Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
-        Where-Object { $_.CommandLine -like '*cr_bot.py*' -or $_.CommandLine -like '*supervisor.py*' } |
+    # pythonw too, and the native BuildABot runner the control panel starts.
+    Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='pythonw.exe'" |
+        Where-Object { $_.CommandLine -like '*cr_bot.py*' -or $_.CommandLine -like '*supervisor.py*' -or
+                       $_.CommandLine -like '*mumu_buildabot_native.py*' } |
         ForEach-Object { Stop-Process -Id $_.ProcessId -Force; "stopped pid $($_.ProcessId)" }
     Disable-ScheduledTask -TaskName 'HastyCR-Watchdog' -ErrorAction SilentlyContinue | Out-Null
     Disable-ScheduledTask -TaskName 'HastyCR-Captain'  -ErrorAction SilentlyContinue | Out-Null

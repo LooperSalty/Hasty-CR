@@ -62,6 +62,14 @@ NOT_A_UNIT_EITHER = frozenset(
      "the-log", "tesla-evolution-shock", "tornado", "zap", "zap-evolution",
      "dagger-duchess-tower-bar"})
 
+# Spell classes the detector draws a box around. Not units, but worth keeping:
+# an opponent's spell is elixir they spent, and nothing else shows it.
+SPELL_CLASSES = frozenset({
+    "arrows", "fireball", "zap", "zap-evolution", "the-log", "rocket", "poison",
+    "freeze", "lightning", "earthquake", "tornado", "giant-snowball", "rage",
+    "barbarian-barrel", "goblin-barrel", "skeleton-barrel", "graveyard", "clone",
+    "mirror"})
+
 # One card is two detector classes: the split stages of an Elixir Golem, and
 # a Phoenix before and after it reforms.
 CLASS_ALIASES = {
@@ -127,6 +135,9 @@ class Seen:
     confidence: float
     side: int                    # 0 = ours, 1 = theirs
     side_confidence: float
+    # Pixel box (x1, y1, x2, y2) in the frame given to `detect`, for anything
+    # that wants to draw what was seen rather than the tile it maps to.
+    box: tuple = ()
 
 
 class SideClassifier:
@@ -181,6 +192,37 @@ class SideClassifier:
         return list(zip(predicted.tolist(), confidence.tolist()))
 
 
+def load_framing(weights: Optional[Path]) -> Optional[dict]:
+    """The crop a checkpoint was trained on, from `framing.json` in its run folder.
+
+    The synthetic-data detector (scripts/synth_dataset.py) is trained on the
+    window ARENA_CROP of our frame scaled to the dataset's 568x896; fed the
+    whole 1080x1920 frame it sees every unit at the wrong scale. No file: the
+    checkpoint was trained on whole frames.
+    """
+    if weights is None:
+        return None
+    path = Path(weights).parent.parent / "framing.json"
+    if not path.is_file():
+        return None
+    import json
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return {"arena_crop": tuple(int(v) for v in data["arena_crop"]),
+            "crop_size": tuple(int(v) for v in data["crop_size"]),
+            "imgsz": int(data.get("imgsz", 640))}
+
+
+def crop_to_frame(xyxy: np.ndarray, crop: Tuple[int, int, int, int],
+                  size: Tuple[int, int]) -> np.ndarray:
+    """Boxes predicted on the resized crop, back in frame pixels."""
+    x0, y0, x1, y1 = crop
+    width, height = size
+    out = np.asarray(xyxy, dtype=float).copy()
+    out[:, [0, 2]] = x0 + out[:, [0, 2]] * (x1 - x0) / width
+    out[:, [1, 3]] = y0 + out[:, [1, 3]] * (y1 - y0) / height
+    return out
+
+
 def resolve_weights(explicit: Optional[Path] = None) -> Optional[Path]:
     if explicit:
         return explicit if explicit.exists() else None
@@ -196,7 +238,8 @@ class YoloVision:
                  side_floor: float = 0.55):
         self.weights = resolve_weights(weights)
         self.confidence = confidence
-        self.imgsz = imgsz
+        self.framing = load_framing(self.weights)
+        self.imgsz = self.framing["imgsz"] if self.framing else imgsz
         self.device = device
         self.max_units = max_units
         self.side_floor = side_floor
@@ -209,6 +252,7 @@ class YoloVision:
         # Detector classes with no units.json entry: cards the
         # brain is blind to. Empty is the only acceptable value.
         self.unresolved: dict = {}
+        self.last_spells: list = []
 
         self._model = None
         self._names: Dict[int, str] = {}
@@ -258,11 +302,18 @@ class YoloVision:
         if not self.ready:
             return [], []
         started = time.perf_counter()
+        self.last_spells = []           # never carry a spell over from the last frame
         pixels = np.asarray(frame.convert("RGB"))
         height, width = pixels.shape[:2]
+        source = pixels
+        if self.framing:
+            # Same window and scale as training; boxes are mapped back below.
+            # The crop is in 1080x1920 frame pixels, the runner's frame size.
+            source = np.asarray(frame.convert("RGB").crop(self.framing["arena_crop"])
+                                .resize(self.framing["crop_size"], Image.BILINEAR))
         try:
             result = self._model.predict(
-                pixels[:, :, ::-1], imgsz=self.imgsz, conf=self.confidence,
+                source[:, :, ::-1], imgsz=self.imgsz, conf=self.confidence,
                 device=self.device, verbose=False, max_det=self.max_units)[0]
         except Exception as exc:
             self.error = f"predict failed: {type(exc).__name__}: {exc}"
@@ -275,13 +326,21 @@ class YoloVision:
             return [], []
 
         xyxy = boxes.xyxy.cpu().numpy()
+        if self.framing:
+            xyxy = crop_to_frame(xyxy, self.framing["arena_crop"], self.framing["crop_size"])
         confidences = boxes.conf.cpu().numpy()
         classes = boxes.cls.cpu().numpy().astype(int)
 
         keep, crops = [], []
         size = self.sides.crop
+        spells = []
         for (x1, y1, x2, y2), confidence, cls in zip(xyxy, confidences, classes):
             raw = self._names.get(int(cls), "")
+            if raw in SPELL_CLASSES:
+                tile_x, tile_y = self._to_tile((x1 + x2) / 2.0, (y1 + y2) / 2.0, width, height)
+                spells.append((raw.replace("-", "_"), tile_x, tile_y, float(confidence),
+                               (int(x1), int(y1), int(x2), int(y2))))
+                continue
             if raw in NOT_A_UNIT:
                 continue
             key = _key(raw)
@@ -300,7 +359,8 @@ class YoloVision:
             # A sprite stands at the bottom-centre of its box; the box centre
             # sits somewhere around its chest and reads a tile too far forward.
             tile_x, tile_y = self._to_tile((x1 + x2) / 2.0, y2, width, height)
-            keep.append((unit.name, tile_x, tile_y, float(confidence)))
+            keep.append((unit.name, tile_x, tile_y, float(confidence),
+                         (int(x1), int(y1), int(x2), int(y2))))
 
             pad_w, pad_h = (x2 - x1) * 0.125, (y2 - y1) * 0.125
             cx1 = max(0, int(x1 - pad_w))
@@ -316,7 +376,7 @@ class YoloVision:
         verdicts = self.sides.classify(crops)
         ours: List[Seen] = []
         theirs: List[Seen] = []
-        for (name, tile_x, tile_y, confidence), (side, side_confidence) in zip(keep, verdicts):
+        for (name, tile_x, tile_y, confidence, box), (side, side_confidence) in zip(keep, verdicts):
             # An unsure side is worse than a missing unit: putting one of ours
             # in the threat list invents a push, and putting one of theirs in
             # the ally list hides one. Below the floor, fall back to the half
@@ -324,12 +384,14 @@ class YoloVision:
             # wrong only in the contested middle.
             if side_confidence < self.side_floor:
                 side = 1 if tile_y > (31 - arena.RIVER_Y) else 0
-            seen = Seen(name, tile_x, tile_y, confidence, int(side), side_confidence)
+            seen = Seen(name, tile_x, tile_y, confidence, int(side), side_confidence, box)
             (theirs if side == 1 else ours).append(seen)
 
         self.frames += 1
         self.detect_ms = (time.perf_counter() - started) * 1000.0
         self.last_counts = (len(ours), len(theirs))
+        # (name, tile_x, tile_y, confidence, box) for this frame's spell boxes.
+        self.last_spells = spells
         return ours, theirs
 
     # ----------------------------------------------------------- state swap
@@ -355,7 +417,10 @@ class YoloVision:
                     continue
                 out.append(UnitDetection(
                     unit=unit,
-                    position=Position(bbox=(0, 0, 0, 0), conf=seen.confidence,
+                    # bbox is in the frame passed in (1080x1920 for the
+                    # runners), not upstream's 368x652; only drawing reads it.
+                    position=Position(bbox=tuple(seen.box) or (0, 0, 0, 0),
+                                      conf=seen.confidence,
                                       tile_x=seen.tile_x, tile_y=seen.tile_y)))
             return out
 

@@ -113,6 +113,31 @@ def deck_pool(cards: Dict[str, object],
     return pool
 
 
+def live_deck_pool(cards: Dict[str, object],
+                   path: Path | None = None) -> List[Tuple[str, str, List[str]]]:
+    """(name, style, deck) for the decks the live bot actually meets.
+
+    Written by `scripts/build_live_decks.py` from the runner's log. Unlike
+    `deck_pool` a deck may repeat - repeats are the weight given to decks
+    that beat us - and nothing is padded in from the archetypes. Decks naming
+    a card the simulator cannot build are dropped. HASTYCR_LIVE_DECKS
+    overrides the file.
+    """
+    import os
+    path = Path(path or os.environ.get("HASTYCR_LIVE_DECKS")
+                or Path(__file__).resolve().parents[1] / "data" / "live_decks.json")
+    try:
+        decks = json.loads(path.read_text(encoding="utf-8")).get("decks", ())
+    except (OSError, ValueError):
+        return []
+    pool = []
+    for index, deck in enumerate(decks):
+        if len(deck) != 8 or any(card not in cards or cards[card] is None for card in deck):
+            continue
+        pool.append((f"live_{index:03d}", classify_style(cards, deck), list(deck)))
+    return pool
+
+
 def rejected(cards: Dict[str, object]) -> Dict[str, List[str]]:
     """Which archetypes were dropped and which cards were missing."""
     out = {}

@@ -58,6 +58,23 @@ DEFAULT_INSTANCE = os.environ.get("HASTYCR_INSTANCE", "Android Device-1-2")
 
 _ENUM_PROC = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
 
+PER_MONITOR_AWARE = 2
+
+
+def ensure_dpi_awareness() -> None:
+    """Read windows in physical pixels, whatever monitor they are on.
+
+    A DPI-unaware process sees a window on a monitor scaled to 150% at two
+    thirds of its size, while PrintWindow still draws it full size: the grab
+    held the top-left two thirds of the game, magnified, and the bot read
+    every screen as unknown. Idempotent; a process whose awareness was
+    already set (Qt sets its own) keeps it.
+    """
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(PER_MONITOR_AWARE)
+    except (AttributeError, OSError):
+        pass
+
 
 class BITMAPINFOHEADER(ctypes.Structure):
     _fields_ = [
@@ -118,6 +135,7 @@ class Surface:
 
 def find_surfaces() -> Iterator[Surface]:
     """Yield every plausible Android render surface, largest first."""
+    ensure_dpi_awareness()
     candidates: list[Surface] = []
     for top in _top_level():
         if not user32.IsWindowVisible(top):
@@ -191,6 +209,7 @@ class SurfaceGrabber:
     """
 
     def __init__(self, surface: Surface):
+        ensure_dpi_awareness()
         self.surface = surface
         self._dc = None
         self._bitmap = None

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -176,7 +177,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="HastyCR unattended supervisor")
     parser.add_argument("--adb", type=Path,
                         default=Path(r"C:\Program Files\Netease\MuMuPlayer\nx_device\15.0\shell\adb.exe"))
-    parser.add_argument("--serial", default="127.0.0.1:16480")
+    # Same env var as scripts/emulator.py, so the supervisor and the bot it
+    # launches always agree on which instance to drive.
+    parser.add_argument("--serial", default=os.environ.get("HASTYCR_SERIAL", "127.0.0.1:16480"))
     parser.add_argument("--matches", type=int, default=5, help="matches per block")
     parser.add_argument("--block-timeout", type=int, default=2400)
     parser.add_argument("--review-timeout", type=int, default=900)
