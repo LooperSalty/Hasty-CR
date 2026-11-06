@@ -19,9 +19,12 @@ param(
     [ValidateSet('beatdown', 'buildabot', 'pekka', 'pekka2', 'pekka2c', 'pekka_hier', 'ia', 'hybride', 'hybride_sorts')][string]$Strategy = 'beatdown',
     [string]$Checkpoint = 'tmp\rl\starter_long_best.pt',
     [ValidateSet('starter', 'default', 'pekka')][string]$Deck = 'starter',
-    # BuildABot's own unit model: measured live on 2026-10-11 it saw the
-    # troops our YOLO detector missed or misnamed (a Giant read as a Hog).
-    [ValidateSet('buildabot', 'yolo', 'auto')][string]$Vision = 'buildabot',
+    # Our YOLO detector trained on our own frames (tmp/yolo/runs/chosen.txt)
+    # with the side classifier trained on our recordings: on 48 checked frames
+    # of our arena (scripts/eval_truth.py, 2026-11-06) 75% of units exactly
+    # right and 3% ghosts, against 57% and 20% for BuildABot's model, which
+    # stays available with -Vision buildabot.
+    [ValidateSet('buildabot', 'yolo', 'auto')][string]$Vision = 'yolo',
     [string]$Serial = $(if ($env:HASTYCR_SERIAL) { $env:HASTYCR_SERIAL } else { '127.0.0.1:16384' }),
     # Keep a battle frame a second with what the bot saw and played, for
     # growing the detector's dataset (scriptsutolabel.py).

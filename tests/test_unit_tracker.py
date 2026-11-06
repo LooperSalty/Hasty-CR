@@ -423,3 +423,21 @@ def test_without_own_structures_our_building_is_left_to_the_classifier():
     t = UnitTracker(PEKKA_OURS | {"inferno_tower"}, own_structures=False)
     tracks = t.update([det("inferno_tower", 9, 9, hint="enemy")], 0.0)
     assert [tr.side for tr in tracks] == ["enemy"]
+
+
+# --- live 2026-11-06: claiming our card past the river (for our Minions) let
+# enemy mirror units walk in undefended; past the river it stays theirs ------
+
+
+def test_our_card_past_the_river_right_after_our_play_is_still_theirs():
+    t = UnitTracker(PEKKA_OURS)
+    t.played("minions", 0.0, (3, 13))
+    tracks = t.update([det("minion", 3, 17, hint="ally")], 2.2)
+    assert [tr.side for tr in tracks] == ["enemy"]
+
+
+def test_our_card_past_the_river_long_after_any_play_is_still_theirs():
+    t = UnitTracker(PEKKA_OURS)
+    t.played("minions", 0.0, (3, 13))
+    tracks = t.update([det("minion", 4, 22, hint="ally")], 30.0)
+    assert [tr.side for tr in tracks] == ["enemy"]

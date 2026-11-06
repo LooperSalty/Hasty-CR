@@ -190,6 +190,11 @@ class UnitTracker:
 
     def _claim(self, d: Detection, now: float) -> Optional[str]:
         """Why `d` is ours: 'near' (for sure), 'far' (until the votes say otherwise) or None."""
+        # Past the river a unit of our card is the opponent's copy. Claiming it
+        # ours when we had just played that card (for our Minions re-read on
+        # the far bank) was tried live on 2026-11-06 and cost the defence:
+        # enemy mirror units there were taken for ours and walked in
+        # undefended (12.6 defences a match instead of 20, 0 wins in 5).
         if d.name not in self.our_units or d.y >= THEIR_HALF_MIN_Y:
             return None
         if self.own_structures and d.name in STRUCTURES and d.y < DEEP_Y:

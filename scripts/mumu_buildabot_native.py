@@ -107,6 +107,7 @@ DECK_PRESETS = {
 ACTIONS = DECK_PRESETS["default"]
 DECK = [action.CARD for action in ACTIONS]
 CARDS_TO_ACTIONS = {action.CARD: action for action in ACTIONS}
+YOLO_CONFIDENCE = 0.2           # --vision yolo: detection threshold (see build_vision)
 
 
 def use_deck(preset: str) -> None:
@@ -315,10 +316,13 @@ def build_vision(choice: str, log):
         log("VISION buildabot (requested)")
         return None
     from brain.vision import YoloVision
-    vision = YoloVision()
+    # 0.2: on the checked frames (scripts/eval_truth.py) it finds 83% of the
+    # units with 2% ghosts, against 74% and none at the old 0.40.
+    vision = YoloVision(confidence=YOLO_CONFIDENCE)
     if vision.ready:
-        sides = "yes" if vision.sides.ready else "NO"
-        log(f"VISION yolo weights={vision.weights.name} side_classifier={sides}")
+        sides = vision.sides.path.name if vision.sides.ready else "NO"
+        log(f"VISION yolo weights={vision.weights.parent.parent.name} conf={YOLO_CONFIDENCE} "
+            f"side_classifier={sides} ({vision.sides.crop}px)")
         return vision
     log(f"VISION yolo unavailable ({vision.error}); staying on buildabot")
     return None

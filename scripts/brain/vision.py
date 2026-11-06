@@ -40,7 +40,12 @@ from . import arena
 
 ROOT = Path(__file__).resolve().parents[2]
 RUNS = ROOT / "tmp" / "yolo" / "runs"
-SIDE_MODEL = ROOT / "tmp" / "yolo" / "side_classifier.pt"
+# Trained on our own recorded matches (scripts/train_side_ours.py): 94% of
+# sides right on the checked frames against 84% for the one trained on the
+# published dataset, which stays the fallback.
+SIDE_MODEL_OURS = ROOT / "tmp" / "yolo" / "side_classifier_ours48.pt"
+SIDE_MODEL = (SIDE_MODEL_OURS if SIDE_MODEL_OURS.exists()
+              else ROOT / "tmp" / "yolo" / "side_classifier.pt")
 
 # Scenery, UI and towers. The brain wants troops and buildings; a `tower-bar`
 # in the enemy list would be read as a threat standing on our tower.
@@ -148,6 +153,10 @@ class SideClassifier:
         self.ready = False
         self.accuracy = 0.0
         self.crop = 32
+        # Share of the box added around it before the resize, (left, top,
+        # right, bottom): the checkpoint says how it was trained (the classifier
+        # trained on our recordings reaches up to the HP bar and level badge).
+        self.pad = (0.125, 0.125, 0.125, 0.125)
         self._model = None
         self._device = device
         self._load()
@@ -174,6 +183,7 @@ class SideClassifier:
             self._model = model.to(device).eval()
             self._device = device
             self.crop = int(blob.get("crop", 32))
+            self.pad = tuple(blob.get("pad", self.pad))
             self.accuracy = float(blob.get("accuracy", 0.0))
             self.ready = True
         except Exception:
@@ -190,6 +200,23 @@ class SideClassifier:
             probabilities = torch.softmax(self._model(tensor), dim=1)
             confidence, predicted = probabilities.max(1)
         return list(zip(predicted.tolist(), confidence.tolist()))
+
+
+def _resize(pixels: np.ndarray, size: Tuple[int, int]) -> np.ndarray:
+    """RGB array resized to (width, height): OpenCV when present, PIL otherwise.
+
+    Measured on the checked frames of scripts/truth_set.py (2026-11-06): a
+    detection fell from 24 to 19 ms a frame with OpenCV, and area averaging
+    when shrinking matched them slightly better than PIL's bilinear (names
+    96% right instead of 92%, sides 96% instead of 94%).
+    """
+    try:
+        import cv2
+    except ImportError:
+        return np.asarray(Image.fromarray(np.ascontiguousarray(pixels)).resize(size, Image.BILINEAR))
+    shrinking = size[0] < pixels.shape[1] or size[1] < pixels.shape[0]
+    return cv2.resize(np.ascontiguousarray(pixels), size,
+                      interpolation=cv2.INTER_AREA if shrinking else cv2.INTER_LINEAR)
 
 
 def load_framing(weights: Optional[Path]) -> Optional[dict]:
@@ -224,8 +251,18 @@ def crop_to_frame(xyxy: np.ndarray, crop: Tuple[int, int, int, int],
 
 
 def resolve_weights(explicit: Optional[Path] = None) -> Optional[Path]:
+    """`explicit`, else the run named in RUNS/chosen.txt, else the newest best.pt.
+
+    chosen.txt pins the detector that won on the checked frames, so a run
+    still training (or one that lost) is never picked up just for being newer.
+    """
     if explicit:
         return explicit if explicit.exists() else None
+    chosen = RUNS / "chosen.txt"
+    if chosen.exists():
+        pinned = RUNS / chosen.read_text(encoding="utf-8").strip() / "weights" / "best.pt"
+        if pinned.exists():
+            return pinned
     found = list(RUNS.glob("*/weights/best.pt"))
     return max(found, key=lambda p: p.stat().st_mtime) if found else None
 
@@ -235,7 +272,7 @@ class YoloVision:
 
     def __init__(self, weights: Optional[Path] = None, confidence: float = 0.40,
                  imgsz: int = 640, device: str = "0", max_units: int = 40,
-                 side_floor: float = 0.55):
+                 side_floor: float = 0.55, side_model: Optional[Path] = None):
         self.weights = resolve_weights(weights)
         self.confidence = confidence
         self.framing = load_framing(self.weights)
@@ -257,7 +294,7 @@ class YoloVision:
         self._model = None
         self._names: Dict[int, str] = {}
         self._units = {}
-        self.sides = SideClassifier()
+        self.sides = SideClassifier(side_model or SIDE_MODEL)
         self._load()
 
     def _load(self) -> None:
@@ -309,8 +346,8 @@ class YoloVision:
         if self.framing:
             # Same window and scale as training; boxes are mapped back below.
             # The crop is in 1080x1920 frame pixels, the runner's frame size.
-            source = np.asarray(frame.convert("RGB").crop(self.framing["arena_crop"])
-                                .resize(self.framing["crop_size"], Image.BILINEAR))
+            x0, y0, x1, y1 = self.framing["arena_crop"]
+            source = _resize(pixels[y0:y1, x0:x1], tuple(self.framing["crop_size"]))
         try:
             result = self._model.predict(
                 source[:, :, ::-1], imgsz=self.imgsz, conf=self.confidence,
@@ -362,16 +399,15 @@ class YoloVision:
             keep.append((unit.name, tile_x, tile_y, float(confidence),
                          (int(x1), int(y1), int(x2), int(y2))))
 
-            pad_w, pad_h = (x2 - x1) * 0.125, (y2 - y1) * 0.125
-            cx1 = max(0, int(x1 - pad_w))
-            cy1 = max(0, int(y1 - pad_h))
-            cx2 = min(width, int(x2 + pad_w))
-            cy2 = min(height, int(y2 + pad_h))
+            left, top, right, bottom = self.sides.pad
+            cx1 = max(0, int(x1 - (x2 - x1) * left))
+            cy1 = max(0, int(y1 - (y2 - y1) * top))
+            cx2 = min(width, int(x2 + (x2 - x1) * right))
+            cy2 = min(height, int(y2 + (y2 - y1) * bottom))
             patch = pixels[cy1:cy2, cx1:cx2]
             if patch.size == 0:
                 patch = np.zeros((size, size, 3), np.uint8)
-            crops.append(np.asarray(
-                Image.fromarray(patch).resize((size, size), Image.BILINEAR)))
+            crops.append(_resize(patch, (size, size)))
 
         verdicts = self.sides.classify(crops)
         ours: List[Seen] = []
