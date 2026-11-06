@@ -290,7 +290,8 @@ def parse_args() -> argparse.Namespace:
                         default=ROOT / "tmp" / "rl" / "starter_long_best.pt",
                         help="with --strategy ia: a checkpoint trained on this deck "
                              "(sim.train_ppo --deck)")
-    parser.add_argument("--strategy", choices=("buildabot", "beatdown", "pekka", "ia", "hybride", "hybride_sorts"),
+    parser.add_argument("--strategy", choices=("buildabot", "beatdown", "pekka", "pekka2", "pekka2c",
+                                               "pekka_hier", "ia", "hybride", "hybride_sorts"),
                         default="buildabot",
                         help="buildabot = upstream's per-card rules; beatdown = bank to 10, "
                              "Giant behind the King Tower, support troops behind it")
@@ -341,7 +342,12 @@ class Runner:
         self.strategy = strategy            # Beatdown / RL strategy, or None for plain BuildABot
         self.view = view                    # ViewWriter for the live view, or None
         # Detect -> track -> sides -> enemy elixir; owns the YOLO fallback too.
-        self.perception = Perception(DECK, vision, detector, upstream_units, log)
+        # A strategy may ask to see enemies from their first frame (pekka2c).
+        min_hits = getattr(strategy, "enemy_min_hits", None)
+        self.perception = Perception(DECK, vision, detector, upstream_units, log,
+                                     own_structures=getattr(strategy, "own_structures", True),
+                                     **({"enemy_min_hits": min_hits, "deep_born_min_hits": min_hits}
+                                        if min_hits else {}))
         # A file the panel creates to ask for a stop once the match is over.
         self.stop_flag = stop_flag
         # Once asked, a stop stays asked: the flag is deleted when read, and a
@@ -566,7 +572,7 @@ class Runner:
         hand = [card.name for card in state.cards[1:5]]
         self.log(f"IDLE elixir={state.numbers.elixir.number} hand={hand} ready={list(state.ready)} "
                  f"enemies={len(state.enemies)}[{units(state.enemies)}] "
-                 f"allies={len(state.allies)}[{units(state.allies)}]")
+                 f"allies={len(state.allies)}[{units(state.allies)}] why={self.plan_reason}")
 
     def choose(self, state, now: float):
         """(action, score, reason) under the configured strategy."""
@@ -689,6 +695,18 @@ def main() -> int:
         # The user's P.E.K.K.A game plan as rules (scripts/pekka_strategy.py).
         from pekka_strategy import PekkaStrategy
         strategy = PekkaStrategy()
+    elif args.strategy == "pekka2":
+        # The same plan with a counter per threat (Wizard, Valkyrie, dragons...).
+        from pekka_strategy import PekkaCountersStrategy
+        strategy = PekkaCountersStrategy()
+    elif args.strategy == "pekka_hier":
+        # The rules as they were on 2026-11-04, for an A/B against today's.
+        from pekka_strategy import PekkaYesterdayStrategy
+        strategy = PekkaYesterdayStrategy()
+    elif args.strategy == "pekka2c":
+        # pekka2 with the 2026-11-05 defence additions off, for an A/B.
+        from pekka_strategy import PekkaClassicStrategy
+        strategy = PekkaClassicStrategy()
     elif args.strategy in ("ia", "hybride", "hybride_sorts"):
         from native_rl import RLStrategy
         policy = RLStrategy(args.rl_checkpoint, [card.name for card in DECK])

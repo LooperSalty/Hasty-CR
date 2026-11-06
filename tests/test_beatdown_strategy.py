@@ -112,9 +112,10 @@ def test_an_air_threat_gets_something_that_hits_air_behind_it():
 
 
 def test_minions_go_straight_onto_the_threat():
+    trio = [unit("minion", 4, 11, transport="air"), unit("minion", 5, 11, transport="air"),
+            unit("minion", 4, 12, transport="air")]
     plan = BeatdownStrategy().decide(
-        state(["minions", "giant", "arrows", "fireball"], 6,
-              enemies=[unit("minion", 4, 11, transport="air")]), 0.0)
+        state(["minions", "giant", "arrows", "fireball"], 6, enemies=trio), 0.0)
     assert plan.card == "minions" and plan.tile == (4, 11)
 
 
@@ -288,3 +289,33 @@ def test_the_budget_frees_up_once_the_wave_is_over():
         strategy.played(plan.card, plan.tile, t)
     later = strategy.decide(state(hand, 10, enemies=[unit("hog_rider", 4, 10, target="buildings")]), 30.0)
     assert later.card == "minipekka"
+
+
+# --- user, 2026-11-05: useless defenders (a troop with no life left, Archers
+# for two Skeletons) ----------------------------------------------------------
+
+
+def test_two_skeletons_are_not_worth_a_card():
+    skeletons = [unit("skeleton", 13, 12), unit("skeleton", 14, 12), unit("skeleton", 13, 11)]
+    plan = BeatdownStrategy().decide(
+        state(["archers", "knight", "giant", "arrows"], 8, enemies=skeletons), 0.0)
+    assert plan.card is None or plan.phase != "défense"
+
+
+def test_a_troop_our_tower_has_all_but_killed_gets_no_card():
+    from types import SimpleNamespace as NS
+    dying = NS(unit=NS(name="valkyrie", transport="ground", target="ground"),
+               position=NS(tile_x=4, tile_y=8, conf=0.9), hp_left=0.1)
+    plan = BeatdownStrategy().decide(state(["knight", "archers", "giant", "arrows"], 8,
+                                           enemies=[dying]), 0.0)
+    assert plan.card is None or plan.phase != "défense"
+
+
+def test_a_defender_in_one_lane_does_not_delay_the_answer_in_the_other():
+    strategy = BeatdownStrategy()
+    first = strategy.decide(state(["knight", "minipekka", "giant", "arrows"], 9,
+                                  enemies=[unit("valkyrie", 3, 9)]), 0.0)
+    strategy.played(first.card, first.tile, 0.2)
+    plan = strategy.decide(state(["minipekka", "archers", "giant", "arrows"], 6,
+                                 enemies=[unit("valkyrie", 3, 9), unit("hog_rider", 14, 12)]), 1.0)
+    assert plan.phase == "défense" and plan.card == "minipekka" and plan.tile[0] >= 10

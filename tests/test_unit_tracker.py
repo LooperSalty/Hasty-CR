@@ -16,8 +16,10 @@ from unit_tracker import Detection, UnitTracker  # noqa: E402
 OURS = {"knight", "archer", "minion", "giant", "musketeer", "minipekka"}
 
 
-def det(name, x, y, hint="enemy", hint_conf=0.6, conf=0.8):
-    return Detection(name=name, x=x, y=y, box=(1, 2, 3, 4), conf=conf,
+def det(name, x, y, hint="enemy", hint_conf=0.6, conf=0.8, box=None):
+    """A box ~1 tile wide where the unit stands (60 px a tile)."""
+    box = box or (round(x * 60), round(y * 60), round(x * 60) + 50, round(y * 60) + 60)
+    return Detection(name=name, x=x, y=y, box=box, conf=conf,
                      side_hint=hint, side_conf=hint_conf)
 
 
@@ -294,3 +296,130 @@ def test_a_misread_where_our_troop_was_just_dropped_is_a_shadow_on_its_own():
     t.played("pekka", 0.0, (8, 0))
     tracks = t.update([det("giant", 8, 5)], 2.0)
     assert tracks[0].side == "shadow" and t.spawned == []
+
+
+# --- sides settled over several frames (live 2026-11-02: half the threats the
+# P.E.K.K.A deck defended against were names of our own deck) ----------------
+
+
+def test_our_late_claimed_minions_flying_down_to_defend_stay_ours():
+    """Seen 3.5 s after the drop (a far claim), they fly down onto an enemy:
+    that used to flip them to enemy, and Archers were sent after our Minions."""
+    t = UnitTracker(PEKKA_OURS)
+    t.played("minions", 0.0, (4, 13))
+    t.update([det("minion", 4, 13, hint="ally")], 3.5)
+    tracks = t.update([det("minion", 4, 11, hint="ally")], 4.0)
+    assert [tr.side for tr in tracks] == ["ally"]
+
+
+def test_a_unit_the_classifier_mostly_calls_ours_becomes_ours():
+    t = UnitTracker(PEKKA_OURS)
+    first = t.update([det("knight", 6, 6, hint="enemy")], 0.0)
+    assert first[0].side == "enemy"
+    for step in range(1, 8):
+        tracks = t.update([det("knight", 6, 6 + 0.2 * step, hint="ally")], 0.1 * step)
+    assert [tr.side for tr in tracks] == ["ally"]
+
+
+def test_a_few_frames_are_not_enough_to_change_sides():
+    t = UnitTracker(PEKKA_OURS)
+    t.update([det("knight", 6, 6, hint="enemy")], 0.0)
+    for step in range(1, 4):
+        tracks = t.update([det("knight", 6, 6, hint="ally")], 0.1 * step)
+    assert [tr.side for tr in tracks] == ["enemy"]
+
+
+def test_a_mirror_knight_claimed_ours_from_afar_is_theirs_once_the_classifier_agrees():
+    t = UnitTracker(PEKKA_OURS)
+    t.played("knight", 0.0, (3, 8))
+    t.update([det("knight", 5, 10, hint="enemy")], 5.0)          # far claim: ours for now
+    for step in range(1, 8):
+        tracks = t.update([det("knight", 5, 10 - 0.3 * step, hint="enemy")], 5.0 + 0.1 * step)
+    assert [tr.side for tr in tracks] == ["enemy"]
+
+
+def test_a_troop_dropped_where_we_saw_it_land_stays_ours_whatever_the_votes():
+    t = UnitTracker(PEKKA_OURS)
+    t.played("knight", 0.0, (8, 6))
+    t.update([det("knight", 8, 6, hint="ally")], 1.0)
+    for step in range(1, 12):
+        tracks = t.update([det("knight", 8, 6, hint="enemy")], 1.0 + 0.1 * step)
+    assert [tr.side for tr in tracks] == ["ally"]
+
+
+def test_our_troop_lost_in_a_melee_and_read_again_deep_in_our_half_is_ours():
+    t = UnitTracker(PEKKA_OURS)
+    t.played("knight", 0.0, (8, 6))
+    t.update([det("knight", 8, 6, hint="ally")], 1.0)
+    t.update([], 2.0)                                            # lost for good (> 8 s)
+    tracks = t.update([det("knight", 9, 4, hint="enemy")], 20.0)
+    assert [tr.side for tr in tracks] == ["ally"]
+    assert t.spawned == []
+
+
+def test_a_knight_deep_in_our_half_after_an_enemy_knight_came_in_is_for_the_classifier():
+    t = UnitTracker(PEKKA_OURS)
+    t.played("knight", 0.0, (3, 6))
+    t.update([det("knight", 14, 18, hint="enemy")], 10.0)        # theirs, other lane
+    t.update([], 11.0)
+    tracks = t.update([det("knight", 13, 8, hint="enemy")], 20.0)
+    assert [tr.side for tr in tracks] == ["enemy"]
+
+
+def test_a_troop_read_at_the_bridge_long_after_our_play_is_for_the_classifier():
+    t = UnitTracker(PEKKA_OURS)
+    t.played("knight", 0.0, (8, 6))
+    tracks = t.update([det("knight", 3, 13, hint="enemy")], 20.0)
+    assert [tr.side for tr in tracks] == ["enemy"]
+
+
+# --- one box, several names (live 2026-11-04: IoU 1.0 between knight/valkyrie,
+# archer/skeleton, inferno_tower/furnace, pekka/minipekka in the same frame) --
+
+
+def test_one_box_read_under_two_names_is_one_unit():
+    t = UnitTracker(PEKKA_OURS)
+    box = (300, 400, 360, 470)
+    tracks = t.update([det("valkyrie", 5, 20, conf=0.52, box=box),
+                       det("knight", 5, 20, conf=0.43, box=box)], 0.0)
+    assert [tr.name for tr in tracks] == ["valkyrie"]
+    assert [s.name for s in t.spawned] == ["valkyrie"]
+
+
+def test_the_second_name_of_a_box_does_not_start_a_track_beside_the_first():
+    """The name that continues a track wins, even when the other one is surer."""
+    t = UnitTracker(PEKKA_OURS | {"inferno_tower"})
+    t.played("inferno_tower", 0.0, (8, 10))
+    box = (480, 600, 560, 680)
+    t.update([det("inferno_tower", 8, 10, hint="ally", conf=0.6, box=box)], 1.0)
+    tracks = t.update([det("inferno_tower", 8, 10, hint="ally", conf=0.5, box=box),
+                       det("furnace", 8, 10, conf=0.7, box=box)], 1.2)
+    assert [(tr.name, tr.side) for tr in tracks] == [("inferno_tower", "ally")]
+    assert t.spawned == []
+
+
+def test_two_units_side_by_side_keep_their_own_names():
+    t = UnitTracker(PEKKA_OURS)
+    tracks = t.update([det("valkyrie", 5, 20), det("knight", 6, 20)], 0.0)
+    assert sorted(tr.name for tr in tracks) == ["knight", "valkyrie"]
+
+
+def test_our_building_deep_in_our_half_is_ours_whatever_the_classifier_says():
+    """Live 2026-11-04: our Inferno Tower read as the enemy's drew two Knights."""
+    t = UnitTracker(PEKKA_OURS | {"inferno_tower"})
+    for step in range(10):
+        tracks = t.update([det("inferno_tower", 9, 9, hint="enemy")], 0.2 * step)
+    assert [tr.side for tr in tracks] == ["ally"]
+    assert t.spawned == []
+
+
+def test_an_enemy_building_in_their_half_stays_theirs():
+    t = UnitTracker(PEKKA_OURS | {"inferno_tower"})
+    tracks = t.update([det("inferno_tower", 9, 22, hint="ally")], 0.0)
+    assert [tr.side for tr in tracks] == ["enemy"]
+
+
+def test_without_own_structures_our_building_is_left_to_the_classifier():
+    t = UnitTracker(PEKKA_OURS | {"inferno_tower"}, own_structures=False)
+    tracks = t.update([det("inferno_tower", 9, 9, hint="enemy")], 0.0)
+    assert [tr.side for tr in tracks] == ["enemy"]

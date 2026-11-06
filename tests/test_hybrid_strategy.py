@@ -148,3 +148,43 @@ def test_with_the_pekka_rules_the_policy_may_not_defend_with_the_pekka():
 def test_with_the_pekka_rules_the_policy_still_attacks_when_nothing_threatens():
     plan = pekka_hybrid("pekka").decide(state(PEKKA_HAND, 9), 0.0)
     assert plan.phase == "ia" and plan.card == "pekka"
+
+
+# Live 2026-11-02: the block held while ANY enemy stood in our half - small fry
+# and threats our troops already fought included: 1 P.E.K.K.A in 6 matches.
+
+
+def test_with_the_pekka_rules_small_fry_in_our_half_does_not_block_the_pekka():
+    plan = pekka_hybrid("pekka").decide(
+        state(PEKKA_HAND, 8, enemies=[unit("skeleton", 4, 8)]), 0.0)
+    assert plan.card == "pekka"
+
+
+def test_with_the_pekka_rules_a_threat_our_troops_fight_does_not_block_the_pekka():
+    plan = pekka_hybrid("pekka").decide(
+        state(PEKKA_HAND, 8, enemies=[unit("valkyrie", 4, 8)], allies=[unit("knight", 4, 7)]),
+        0.0)
+    assert plan.card == "pekka"
+
+
+def test_with_the_pekka_rules_a_threat_nobody_answers_still_blocks_the_pekka():
+    plan = pekka_hybrid("pekka").decide(
+        state(["pekka", "arrows"], 8, enemies=[unit("valkyrie", 4, 8)]), 0.0)
+    assert plan.card is None
+
+
+def test_with_the_pekka_rules_full_elixir_sends_the_pekka_behind_the_king_first():
+    """User: prioritise the big P.E.K.K.A push - before what the policy wants."""
+    plan = pekka_hybrid("archers").decide(state(PEKKA_HAND, 10), 0.0)
+    assert plan.card == "pekka" and plan.tile in ((8, 0), (9, 0))
+
+
+def test_with_the_pekka_rules_the_policy_plays_below_full_elixir():
+    plan = pekka_hybrid("archers").decide(state(PEKKA_HAND + ["archers"], 9), 0.0)
+    assert plan.phase == "ia" and plan.card == "archers"
+
+
+def test_the_giant_hybrid_keeps_the_policy_first_at_full_elixir():
+    """The Giant beatdown's A/B winner (73%) is left as it was."""
+    plan = HybridStrategy(FakeIA()).decide(state(["giant", "archers", "knight", "arrows"], 10), 0.0)
+    assert plan.phase == "ia" and plan.card == "archers"

@@ -45,7 +45,8 @@ ENGAGE_RADIUS = 4.0         # one of ours this close is already fighting it
 NOT_DEFENDERS = frozenset({"giant"})   # walks past troops to the towers
 # Cheapest card that does the job first.
 DEFENDERS = {
-    "air_tank": ("musketeer", "archers", "minions"),
+    # The Inferno Tower hits air too, and melts a Balloon or a Lava Hound.
+    "air_tank": ("inferno_tower", "musketeer", "archers", "minions"),
     "air": ("archers", "minions", "musketeer"),
     # The Inferno Tower melts a tank pulled to the middle (the user's deck).
     "rusher": ("inferno_tower", "minipekka", "knight", "musketeer", "archers", "minions"),
@@ -138,8 +139,11 @@ def engaged(threat: Threat, allies: list) -> bool:
                for ally in allies)
 
 
-def pick_defender(threat: Threat, ready: dict[str, int]) -> Optional[str]:
-    return next((name for name in DEFENDERS[threat.kind] if name in ready), None)
+def pick_defender(threat: Threat, ready: dict[str, int],
+                  counters: Optional[dict] = None) -> Optional[str]:
+    """The first ready card of the threat's own counter list, then of its kind's."""
+    order = tuple((counters or {}).get(threat.name, ())) + DEFENDERS[threat.kind]
+    return next((name for name in order if name in ready), None)
 
 
 def _clamp(value: float, low: int, high: int) -> int:

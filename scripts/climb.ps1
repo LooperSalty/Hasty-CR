@@ -16,7 +16,7 @@
 param(
     [double]$Hours = 10,
     [int]$Matches = 0,
-    [ValidateSet('beatdown', 'buildabot', 'pekka', 'ia', 'hybride', 'hybride_sorts')][string]$Strategy = 'beatdown',
+    [ValidateSet('beatdown', 'buildabot', 'pekka', 'pekka2', 'pekka2c', 'pekka_hier', 'ia', 'hybride', 'hybride_sorts')][string]$Strategy = 'beatdown',
     [string]$Checkpoint = 'tmp\rl\starter_long_best.pt',
     [ValidateSet('starter', 'default', 'pekka')][string]$Deck = 'starter',
     # BuildABot's own unit model: measured live on 2026-10-11 it saw the

@@ -9,7 +9,7 @@ for path in (str(ROOT), str(ROOT / "scripts"), str(ROOT / "vendor" / "ClashRoyal
     if path not in sys.path:
         sys.path.insert(0, path)
 
-from native_perception import Perception  # noqa: E402
+from native_perception import ENEMY_MIN_HITS, Perception  # noqa: E402
 
 DECK = [SimpleNamespace(name=n, units=[SimpleNamespace(name=u)]) for n, u in (
     ("knight", "knight"), ("archers", "archer"), ("minions", "minion"), ("giant", "giant"),
@@ -18,9 +18,11 @@ for card in DECK:
     card.units = [u for u in card.units if u.name]
 
 
-def seen(name, x, y, side=0, side_conf=0.6, conf=0.8):
+def seen(name, x, y, side=0, side_conf=0.6, conf=0.8, box=None):
+    # One box per unit, where it stands: one box with two names is one unit.
+    box = box or (x * 60, y * 60, x * 60 + 50, y * 60 + 60)
     return SimpleNamespace(name=name, tile_x=x, tile_y=y, confidence=conf, side=side,
-                           side_confidence=side_conf, box=(10, 20, 30, 40))
+                           side_confidence=side_conf, box=box)
 
 
 class FakeVision:
@@ -58,12 +60,14 @@ def test_a_troop_of_ours_misread_as_enemy_stays_ours():
 
 def test_a_new_enemy_troop_is_charged_once_and_its_box_kept():
     p, vision = perception()
-    vision.frames = [([], [seen("giant", 9, 26, side=1)], []),
-                     ([], [seen("giant", 9, 25, side=1)], [])]
+    vision.frames = [([], [seen("giant", 9, 26, side=1, box=(10, 20, 30, 40))], []),
+                     ([], [seen("giant", 9, 25, side=1, box=(10, 20, 30, 40))], []),
+                     ([], [seen("giant", 9, 24.5, side=1, box=(10, 20, 30, 40))], [])]
     state = battle_state()
     p.perceive(state, None, 20.0)
     first = p.enemy.value
     p.perceive(state, None, 20.3)
+    p.perceive(state, None, 20.6)                        # shown once it has lasted 3 frames
     assert first == 5.0                                  # 10 - Giant
     assert p.enemy.value > first                         # same Giant: regenerating, not charged
     assert state.enemies[0].position.bbox == (10, 20, 30, 40)
@@ -171,7 +175,7 @@ def test_a_deployed_elixir_golem_is_billed():
 def upstream(name, x, y):
     return SimpleNamespace(unit=SimpleNamespace(name=name),
                            position=SimpleNamespace(tile_x=x, tile_y=y, conf=0.8,
-                                                    bbox=(1, 2, 3, 4)))
+                                                    bbox=(x * 20, y * 20, x * 20 + 18, y * 20 + 20)))
 
 
 def test_detections_in_the_scenery_outside_the_arena_are_dropped():
@@ -179,9 +183,10 @@ def test_detections_in_the_scenery_outside_the_arena_are_dropped():
     or 19 now and then; the arena is columns 0-17."""
     p = Perception(DECK, vision=None, detector=None, upstream_units=None, log=lambda line: None)
     p.start_match(0.0)
-    state = SimpleNamespace(allies=[upstream("knight", 19, 5), upstream("archer", 13, 8)],
-                            enemies=[upstream("knight", -2, 13), upstream("bomber", 14, 16)])
-    p.perceive(state, None, 1.0)
+    for frame in range(ENEMY_MIN_HITS):
+        state = SimpleNamespace(allies=[upstream("knight", 19, 5), upstream("archer", 13, 8)],
+                                enemies=[upstream("knight", -2, 13), upstream("bomber", 14, 16)])
+        p.perceive(state, None, 1.0 + 0.1 * frame)
     assert [d.unit.name for d in state.allies] == ["archer"]
     assert [d.unit.name for d in state.enemies] == ["bomber"]
 
@@ -200,8 +205,41 @@ def test_a_unit_not_in_our_deck_behind_our_king_tower_is_scenery():
     """Live, a Lava Pup sat at (9,0) - our King Tower's back row - all match."""
     p = Perception(DECK, vision=None, detector=None, upstream_units=None, log=lambda line: None)
     p.start_match(0.0)
-    state = SimpleNamespace(allies=[upstream("knight", 8, 0)],
-                            enemies=[upstream("lava_pup", 9, 0), upstream("bomber", 14, 16)])
-    p.perceive(state, None, 1.0)
+    for frame in range(ENEMY_MIN_HITS):
+        state = SimpleNamespace(allies=[upstream("knight", 8, 0)],
+                                enemies=[upstream("lava_pup", 9, 0), upstream("bomber", 14, 16)])
+        p.perceive(state, None, 1.0 + 0.1 * frame)
     assert [d.unit.name for d in state.allies] == ["knight"]
+    assert [d.unit.name for d in state.enemies] == ["bomber"]
+
+
+def test_a_one_frame_enemy_is_not_shown_to_the_strategies():
+    """Live 2026-11-05: a "giant" flashed where our Archers had just landed and
+    the Inferno Tower went on it; the real Giant crossed a few seconds later."""
+    p = Perception(DECK, vision=None, detector=None, upstream_units=None, log=lambda line: None)
+    p.start_match(0.0)
+    state = SimpleNamespace(allies=[], enemies=[upstream("bomber", 14, 16)])
+    p.perceive(state, None, 1.0)
+    assert state.enemies == []
+
+
+def test_an_enemy_first_seen_deep_in_our_half_needs_longer():
+    p = Perception(DECK, vision=None, detector=None, upstream_units=None, log=lambda line: None)
+    p.start_match(0.0)
+    for frame in range(ENEMY_MIN_HITS):
+        state = SimpleNamespace(allies=[], enemies=[upstream("bomber", 4, 7)])
+        p.perceive(state, None, 1.0 + 0.1 * frame)
+    assert state.enemies == []
+    for frame in range(ENEMY_MIN_HITS, 10):
+        state = SimpleNamespace(allies=[], enemies=[upstream("bomber", 4, 7)])
+        p.perceive(state, None, 1.0 + 0.1 * frame)
+    assert [d.unit.name for d in state.enemies] == ["bomber"]
+
+
+def test_the_enemy_frame_threshold_can_be_lowered_for_an_a_b():
+    p = Perception(DECK, vision=None, detector=None, upstream_units=None, log=lambda line: None,
+                   enemy_min_hits=1, deep_born_min_hits=1)
+    p.start_match(0.0)
+    state = SimpleNamespace(allies=[], enemies=[upstream("bomber", 4, 7)])
+    p.perceive(state, None, 1.0)
     assert [d.unit.name for d in state.enemies] == ["bomber"]

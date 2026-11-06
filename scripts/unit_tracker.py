@@ -21,6 +21,20 @@ BuildABot often reads one unit as several (our P.E.K.K.A as pekka, minipekka
 and giant at once). A name we do not own that first appears deep in our half,
 beside one of our units and away from any enemy, is such a misread - the
 opponent cannot deploy there - and its track is a "shadow": neither side.
+
+A unit of one of our cards that only a late play claim or the classifier
+made ours or theirs is not settled at birth: every frame's classifier verdict
+is a vote, and a clear majority over enough frames moves it (live, half the
+"threats" the P.E.K.K.A deck defended against were names of our own deck,
+a Knight walking down to defend flipped to enemy). A troop of ours lost in a
+melee and read again deep in our half, where no enemy of that name has been
+lately, is ours come back, whatever one frame of the classifier says.
+
+BuildABot also gives one box several names in the same frame (live
+2026-11-04, IoU 1.0: knight/valkyrie, archer/skeleton, inferno_tower/furnace,
+pekka/minipekka): each name started its own track, and the wrong one was an
+enemy. One box keeps one name - the one that continues a track, else the most
+confident.
 """
 
 from __future__ import annotations
@@ -69,9 +83,37 @@ SHADOW_DROP_SECONDS = 6.0        # ...or near where we dropped a troop this rece
 DEPLOY_ANYWHERE = frozenset({"miner", "goblin", "skeleton", "royal_recruit",
                              "goblin_drill", "goblin_barrel", "skeleton_barrel",
                              "graveyard", "bat", "royal_delivery"})
+# Side votes: once a track has this many frames, a share this large of
+# classifier verdicts for the other side moves it there.
+VOTE_MIN_FRAMES = 6
+VOTE_FLIP_SHARE = 0.7
+# Deploys land in their half or at the bridge: a unit first read deeper than
+# this was there already, lost and found again.
+DEEP_Y = 12.0
+DUPLICATE_IOU = 0.8          # two names on boxes this alike are one unit read twice
+# Buildings stay where they were put, and the opponent cannot build deep in
+# our half: one of our deck's there is ours (live 2026-11-04: our Inferno
+# Tower read as the enemy's drew two Knights onto it).
+STRUCTURES = frozenset({"inferno_tower", "cannon", "tesla", "bomb_tower", "goblin_cage",
+                        "tombstone", "furnace", "goblin_hut", "barbarian_hut",
+                        "elixir_collector", "mortar", "xbow"})
+REACQUIRE_SECONDS = 40.0     # a troop of ours can still be alive this long after its play
+ENEMY_NAME_SECONDS = 15.0    # ...unless an enemy of that name was seen this recently
 CARD_UNITS = {"archers": ("archer",), "minions": ("minion",),
               "skeletons": ("skeleton",), "spear_goblins": ("spear_goblin",),
               "goblins": ("goblin",), "barbarians": ("barbarian",)}
+
+
+def _iou(a: Optional[tuple], b: Optional[tuple]) -> float:
+    if not a or not b:
+        return 0.0
+    width = min(a[2], b[2]) - max(a[0], b[0])
+    height = min(a[3], b[3]) - max(a[1], b[1])
+    if width <= 0 or height <= 0:
+        return 0.0
+    inter = width * height
+    union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
+    return inter / union if union > 0 else 0.0
 
 
 @dataclass(frozen=True)
@@ -101,6 +143,14 @@ class Track:
     missing: bool = False
     far_claim: bool = False        # ours only because we played that card a while ago
     claimed: bool = False          # ours because we played that card (not the classifier)
+    ally_votes: int = 0            # frames the classifier called it ours...
+    enemy_votes: int = 0           # ...and theirs
+
+    def vote(self, hint: str) -> None:
+        if hint == "ally":
+            self.ally_votes += 1
+        else:
+            self.enemy_votes += 1
 
 
 @dataclass
@@ -111,10 +161,13 @@ class UnitTracker:
     # unit name -> (time we played it, tile it was dropped on or None)
     own_plays: dict = field(default_factory=dict)
     lost: list = field(default_factory=list)            # dropped tracks, recently
+    enemy_seen: dict = field(default_factory=dict)      # unit name -> last time an enemy one was
     _ids: count = field(default_factory=lambda: count(1))
+    own_structures: bool = True     # our deck's buildings deep in our half are ours (STRUCTURES)
 
     def reset(self) -> None:
         self.tracks, self.spawned, self.own_plays, self.lost = [], [], {}, []
+        self.enemy_seen = {}
 
     def played(self, card: str, now: float, tile: Optional[tuple] = None) -> None:
         """We deployed `card` on `tile`: its units appearing there are ours."""
@@ -135,14 +188,24 @@ class UnitTracker:
         reach = OWN_SPAWN_RADIUS + OWN_WALK_TILES_PER_SECOND * age
         return "far" if distance <= reach else None
 
+    def _claim(self, d: Detection, now: float) -> Optional[str]:
+        """Why `d` is ours: 'near' (for sure), 'far' (until the votes say otherwise) or None."""
+        if d.name not in self.our_units or d.y >= THEIR_HALF_MIN_Y:
+            return None
+        if self.own_structures and d.name in STRUCTURES and d.y < DEEP_Y:
+            return "near"
+        return self._ours_by_play(d, now) or ("far" if self._reacquired_ours(d, now) else None)
+
     def _side(self, d: Detection, now: float) -> str:
-        if d.name not in self.our_units:
+        if d.name not in self.our_units or d.y >= THEIR_HALF_MIN_Y:
             return "enemy"
-        if d.y >= THEIR_HALF_MIN_Y:
-            return "enemy"
-        if self._ours_by_play(d, now):
-            return "ally"
-        return d.side_hint
+        return "ally" if self._claim(d, now) else d.side_hint
+
+    def _reacquired_ours(self, d: Detection, now: float) -> bool:
+        """`d`, deep in our half, is a troop of ours lost a while and read again."""
+        when, _tile = self.own_plays.get(d.name, (-1e9, None))
+        return (d.y < DEEP_Y and 0.0 <= now - when <= REACQUIRE_SECONDS
+                and now - self.enemy_seen.get(d.name, -1e9) > ENEMY_NAME_SECONDS)
 
     def _dropped_here(self, d: Detection, lost: Track, now: float) -> bool:
         """`d` is our unit just dropped rather than the lost enemy `lost` coming back.
@@ -161,14 +224,27 @@ class UnitTracker:
         return (math.hypot(tile[0] - d.x, tile[1] - d.y)
                 < math.hypot(lost.x - d.x, lost.y - d.y))
 
-    @staticmethod
-    def _recheck(track: Track) -> None:
-        if track.side == "shadow" and track.y <= track.first_y - FAR_CLAIM_DOWN_TILES:
+    def _recheck(self, track: Track) -> None:
+        walked_down = track.y <= track.first_y - FAR_CLAIM_DOWN_TILES
+        if track.side == "shadow" and walked_down:
             track.side = "enemy"             # it walks toward our King: theirs
             return
-        if (track.side == "ally" and (track.far_claim or track.name in TOWER_WALKERS)
-                and track.y <= track.first_y - FAR_CLAIM_DOWN_TILES):
+        if track.side == "ally" and track.name in TOWER_WALKERS and walked_down:
             track.side, track.far_claim, track.claimed = "enemy", False, False
+            return
+        # Our troops walk down to defend, so walking down proves nothing for
+        # the others: what the classifier says frame after frame decides.
+        near_claim = track.claimed and not track.far_claim
+        if (near_claim or track.name not in self.our_units or track.first_y >= THEIR_HALF_MIN_Y
+                or track.side not in ("ally", "enemy")):
+            return
+        frames = track.ally_votes + track.enemy_votes
+        if frames < VOTE_MIN_FRAMES:
+            return
+        if track.side == "ally" and track.enemy_votes >= VOTE_FLIP_SHARE * frames:
+            track.side, track.far_claim, track.claimed = "enemy", False, False
+        elif track.side == "enemy" and track.ally_votes >= VOTE_FLIP_SHARE * frames:
+            track.side = "ally"
 
     def _revive(self, d: Detection, now: float, side: Optional[str] = None) -> Optional[Track]:
         """The recently lost track `d` is most likely the return of, if any.
@@ -191,8 +267,26 @@ class UnitTracker:
         self.lost.remove(track)
         return track
 
+    def _continues(self, d: Detection, now: float) -> bool:
+        """`d` is where a live track of its name could have moved to."""
+        return any(track.name == d.name and math.hypot(track.x - d.x, track.y - d.y)
+                   <= MAX_STEP_TILES + STEP_TILES_PER_SECOND * max(0.0, now - track.last_seen)
+                   for track in self.tracks)
+
+    def _one_name_per_box(self, detections: list[Detection], now: float) -> list[Detection]:
+        kept: list[Detection] = []
+        for d in sorted(detections, key=lambda d: -d.conf):
+            twin = next((i for i, k in enumerate(kept) if k.name != d.name
+                         and _iou(k.box, d.box) >= DUPLICATE_IOU), None)
+            if twin is None:
+                kept.append(d)
+            elif self._continues(d, now) and not self._continues(kept[twin], now):
+                kept[twin] = d
+        return kept
+
     def update(self, detections: list[Detection], now: float) -> list[Track]:
         """Match this frame's detections to tracks; returns the live tracks."""
+        detections = self._one_name_per_box(detections, now)
         pairs = []
         for di, d in enumerate(detections):
             for ti, track in enumerate(self.tracks):
@@ -212,6 +306,7 @@ class UnitTracker:
             d, track = detections[di], self.tracks[ti]
             track.x, track.y, track.box, track.conf = d.x, d.y, d.box, d.conf
             track.last_seen, track.hits, track.missing = now, track.hits + 1, False
+            track.vote(d.side_hint)
             self._recheck(track)
         self.spawned, born = [], []
         for di, d in enumerate(detections):
@@ -224,16 +319,16 @@ class UnitTracker:
             if track is not None:
                 track.x, track.y, track.box, track.conf = d.x, d.y, d.box, d.conf
                 track.last_seen, track.hits, track.missing = now, track.hits + 1, False
+                track.vote(d.side_hint)
                 self.tracks.append(track)
                 continue
             side = self._side(d, now)
-            claim = (self._ours_by_play(d, now) if side == "ally" and d.name in self.our_units
-                     and d.y < THEIR_HALF_MIN_Y else None)
-            far = claim == "far"
+            claim = self._claim(d, now) if side == "ally" else None
             track = Track(id=next(self._ids), name=d.name, x=d.x, y=d.y, box=d.box,
                           conf=d.conf, side=side, first_y=d.y,
-                          first_seen=now, last_seen=now, far_claim=far,
+                          first_seen=now, last_seen=now, far_claim=claim == "far",
                           claimed=claim is not None)
+            track.vote(d.side_hint)
             self.tracks.append(track)
             born.append(track)
             if track.side == "enemy":
@@ -242,6 +337,8 @@ class UnitTracker:
         for track in self.tracks:
             if track.last_seen != now:
                 track.missing = True
+            elif track.side == "enemy":
+                self.enemy_seen[track.name] = now
         kept = [t for t in self.tracks if now - t.last_seen <= HOLD_SECONDS]
         dropped = [t for t in self.tracks if now - t.last_seen > HOLD_SECONDS]
         self.lost = [t for t in self.lost + dropped if now - t.last_seen <= LOST_MEMORY_SECONDS]

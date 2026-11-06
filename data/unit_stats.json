@@ -1,0 +1,491 @@
+{
+ "level": 9,
+ "units": {
+  "archer": {
+   "card": "archers",
+   "cost": 3,
+   "count": 2,
+   "hp": 252
+  },
+  "archer_queen": {
+   "card": "archer_queen",
+   "cost": 5,
+   "count": 1,
+   "hp": 829
+  },
+  "baby_dragon": {
+   "card": "baby_dragon",
+   "cost": 4,
+   "count": 1,
+   "hp": 954
+  },
+  "balloon": {
+   "card": "balloon",
+   "cost": 5,
+   "count": 1,
+   "hp": 1389
+  },
+  "bandit": {
+   "card": "bandit",
+   "cost": 3,
+   "count": 1,
+   "hp": 750
+  },
+  "barbarian": {
+   "card": "barbarians",
+   "cost": 5,
+   "count": 5,
+   "hp": 594
+  },
+  "barbarian_hut": {
+   "card": "barbarian_hut",
+   "cost": 7,
+   "count": 1,
+   "hp": 965
+  },
+  "bat": {
+   "card": "bats",
+   "cost": 2,
+   "count": 5,
+   "hp": 68
+  },
+  "battle_healer": {
+   "card": "battle_healer",
+   "cost": 4,
+   "count": 1,
+   "hp": 1590
+  },
+  "battle_ram": {
+   "card": "battle_ram",
+   "cost": 4,
+   "count": 1,
+   "hp": 801
+  },
+  "bomb_tower": {
+   "card": "bomb_tower",
+   "cost": 4,
+   "count": 1,
+   "hp": 1124
+  },
+  "bomber": {
+   "card": "bomber",
+   "cost": 2,
+   "count": 1,
+   "hp": 252
+  },
+  "bowler": {
+   "card": "bowler",
+   "cost": 5,
+   "count": 1,
+   "hp": 1724
+  },
+  "cannon": {
+   "card": "cannon",
+   "cost": 3,
+   "count": 1,
+   "hp": 683
+  },
+  "dark_prince": {
+   "card": "dark_prince",
+   "cost": 4,
+   "count": 1,
+   "hp": 994
+  },
+  "dart_goblin": {
+   "card": "dart_goblin",
+   "cost": 3,
+   "count": 1,
+   "hp": 216
+  },
+  "electro_dragon": {
+   "card": "electro_dragon",
+   "cost": 5,
+   "count": 1,
+   "hp": 869
+  },
+  "electro_giant": {
+   "card": "electro_giant",
+   "cost": 7,
+   "count": 1,
+   "hp": 3273
+  },
+  "electro_spirit": {
+   "card": "electro_spirit",
+   "cost": 1,
+   "count": 1,
+   "hp": 178
+  },
+  "electro_wizard": {
+   "card": "electro_wizard",
+   "cost": 4,
+   "count": 1,
+   "hp": 591
+  },
+  "elite_barbarian": {
+   "card": "elite_barbarians",
+   "cost": 6,
+   "count": 2,
+   "hp": 1111
+  },
+  "elixir_golem_large": {
+   "card": "elixir_golem",
+   "cost": 3,
+   "count": 1,
+   "hp": 1300
+  },
+  "fire_spirit": {
+   "card": "fire_spirit",
+   "cost": 1,
+   "count": 1,
+   "hp": 178
+  },
+  "firecracker": {
+   "card": "firecracker",
+   "cost": 3,
+   "count": 1,
+   "hp": 252
+  },
+  "fisherman": {
+   "card": "fisherman",
+   "cost": 3,
+   "count": 1,
+   "hp": 721
+  },
+  "furnace": {
+   "card": "furnace",
+   "cost": 4,
+   "count": 1,
+   "hp": 602
+  },
+  "giant": {
+   "card": "giant",
+   "cost": 5,
+   "count": 1,
+   "hp": 3286
+  },
+  "giant_skeleton": {
+   "card": "giant_skeleton",
+   "cost": 6,
+   "count": 1,
+   "hp": 2784
+  },
+  "goblin": {
+   "card": "goblins",
+   "cost": 2,
+   "count": 4,
+   "hp": 167
+  },
+  "goblin_cage": {
+   "card": "goblin_cage",
+   "cost": 4,
+   "count": 1,
+   "hp": 647
+  },
+  "goblin_drill": {
+   "card": "goblin_drill",
+   "cost": 4,
+   "count": 1,
+   "hp": 1325
+  },
+  "goblin_hut": {
+   "card": "goblin_hut",
+   "cost": 5,
+   "count": 1,
+   "hp": 977
+  },
+  "golden_knight": {
+   "card": "golden_knight",
+   "cost": 4,
+   "count": 1,
+   "hp": 1490
+  },
+  "golem": {
+   "card": "golem",
+   "cost": 8,
+   "count": 1,
+   "hp": 4240
+  },
+  "guard": {
+   "card": "guards",
+   "cost": 3,
+   "count": 3,
+   "hp": 68
+  },
+  "hog_rider": {
+   "card": "hog_rider",
+   "cost": 4,
+   "count": 1,
+   "hp": 1406
+  },
+  "hunter": {
+   "card": "hunter",
+   "cost": 4,
+   "count": 1,
+   "hp": 734
+  },
+  "ice_golem": {
+   "card": "ice_golem",
+   "cost": 2,
+   "count": 1,
+   "hp": 1018
+  },
+  "ice_spirit": {
+   "card": "ice_spirit",
+   "cost": 1,
+   "count": 1,
+   "hp": 178
+  },
+  "ice_wizard": {
+   "card": "ice_wizard",
+   "cost": 3,
+   "count": 1,
+   "hp": 570
+  },
+  "inferno_dragon": {
+   "card": "inferno_dragon",
+   "cost": 4,
+   "count": 1,
+   "hp": 1073
+  },
+  "inferno_tower": {
+   "card": "inferno_tower",
+   "cost": 5,
+   "count": 1,
+   "hp": 1448
+  },
+  "knight": {
+   "card": "knight",
+   "cost": 3,
+   "count": 1,
+   "hp": 1463
+  },
+  "lava_hound": {
+   "card": "lava_hound",
+   "cost": 7,
+   "count": 1,
+   "hp": 2966
+  },
+  "little_prince": {
+   "card": "little_prince",
+   "cost": 3,
+   "count": 1,
+   "hp": 579
+  },
+  "lumberjack": {
+   "card": "lumberjack",
+   "cost": 4,
+   "count": 1,
+   "hp": 1060
+  },
+  "magic_archer": {
+   "card": "magic_archer",
+   "cost": 4,
+   "count": 1,
+   "hp": 439
+  },
+  "mega_knight": {
+   "card": "mega_knight",
+   "cost": 7,
+   "count": 1,
+   "hp": 3307
+  },
+  "mega_minion": {
+   "card": "mega_minion",
+   "cost": 3,
+   "count": 1,
+   "hp": 693
+  },
+  "mighty_miner": {
+   "card": "mighty_miner",
+   "cost": 4,
+   "count": 1,
+   "hp": 1861
+  },
+  "miner": {
+   "card": "miner",
+   "cost": 3,
+   "count": 1,
+   "hp": 1003
+  },
+  "minion": {
+   "card": "minions",
+   "cost": 3,
+   "count": 3,
+   "hp": 191
+  },
+  "minipekka": {
+   "card": "minipekka",
+   "cost": 4,
+   "count": 1,
+   "hp": 1151
+  },
+  "monk": {
+   "card": "monk",
+   "cost": 5,
+   "count": 1,
+   "hp": 1834
+  },
+  "mortar": {
+   "card": "mortar",
+   "cost": 4,
+   "count": 1,
+   "hp": 1134
+  },
+  "mother_witch": {
+   "card": "mother_witch",
+   "cost": 4,
+   "count": 1,
+   "hp": 439
+  },
+  "musketeer": {
+   "card": "musketeer",
+   "cost": 4,
+   "count": 1,
+   "hp": 598
+  },
+  "night_witch": {
+   "card": "night_witch",
+   "cost": 4,
+   "count": 1,
+   "hp": 750
+  },
+  "pekka": {
+   "card": "pekka",
+   "cost": 7,
+   "count": 1,
+   "hp": 3114
+  },
+  "phoenix_large": {
+   "card": "phoenix",
+   "cost": 4,
+   "count": 1,
+   "hp": 871
+  },
+  "prince": {
+   "card": "prince",
+   "cost": 5,
+   "count": 1,
+   "hp": 1590
+  },
+  "princess": {
+   "card": "princess",
+   "cost": 3,
+   "count": 1,
+   "hp": 216
+  },
+  "ram_rider": {
+   "card": "ram_rider",
+   "cost": 5,
+   "count": 1,
+   "hp": 1463
+  },
+  "rascal_boy": {
+   "card": "rascals",
+   "cost": 5,
+   "count": 1,
+   "hp": 1518
+  },
+  "rascal_girl": {
+   "card": "rascals",
+   "cost": 5,
+   "count": 2,
+   "hp": 216
+  },
+  "royal_ghost": {
+   "card": "royal_ghost",
+   "cost": 3,
+   "count": 1,
+   "hp": 954
+  },
+  "royal_giant": {
+   "card": "royal_giant",
+   "cost": 6,
+   "count": 1,
+   "hp": 2620
+  },
+  "royal_hog": {
+   "card": "royal_hogs",
+   "cost": 5,
+   "count": 4,
+   "hp": 693
+  },
+  "royal_recruit": {
+   "card": "royal_recruits",
+   "cost": 7,
+   "count": 6,
+   "hp": 454
+  },
+  "skeleton": {
+   "card": "skeletons",
+   "cost": 1,
+   "count": 3,
+   "hp": 68
+  },
+  "skeleton_dragon": {
+   "card": "skeleton_dragons",
+   "cost": 4,
+   "count": 2,
+   "hp": 464
+  },
+  "skeleton_king": {
+   "card": "skeleton_king",
+   "cost": 4,
+   "count": 1,
+   "hp": 1904
+  },
+  "spear_goblin": {
+   "card": "spear_goblins",
+   "cost": 2,
+   "count": 3,
+   "hp": 110
+  },
+  "tesla": {
+   "card": "tesla",
+   "cost": 4,
+   "count": 1,
+   "hp": 979
+  },
+  "tombstone": {
+   "card": "tombstone",
+   "cost": 3,
+   "count": 1,
+   "hp": 439
+  },
+  "valkyrie": {
+   "card": "valkyrie",
+   "cost": 4,
+   "count": 1,
+   "hp": 1579
+  },
+  "wall_breaker": {
+   "card": "wall_breakers",
+   "cost": 2,
+   "count": 2,
+   "hp": 273
+  },
+  "witch": {
+   "card": "witch",
+   "cost": 5,
+   "count": 1,
+   "hp": 695
+  },
+  "wizard": {
+   "card": "wizard",
+   "cost": 5,
+   "count": 1,
+   "hp": 625
+  },
+  "x_bow": {
+   "card": "x_bow",
+   "cost": 6,
+   "count": 1,
+   "hp": 1325
+  },
+  "zappy": {
+   "card": "zappies",
+   "cost": 4,
+   "count": 3,
+   "hp": 439
+  }
+ }
+}
